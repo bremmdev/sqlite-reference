@@ -1,1 +1,113 @@
 @import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
+@theme {
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, "Cascadia Code", "Source Code Pro", Menlo, Consolas, monospace;
+
+  /* Mauve — a dusty purple, the book's accent and heading colour. Tailwind ships
+     no mauve, so the scale is defined here in oklch to match the built-in ramps. */
+  --color-mauve-50: oklch(0.977 0.011 325);
+  --color-mauve-100: oklch(0.951 0.025 325);
+  --color-mauve-200: oklch(0.903 0.049 325);
+  --color-mauve-300: oklch(0.833 0.079 325);
+  --color-mauve-400: oklch(0.738 0.112 325);
+  --color-mauve-500: oklch(0.653 0.131 325);
+  --color-mauve-600: oklch(0.576 0.133 325);
+  --color-mauve-700: oklch(0.501 0.119 325);
+  --color-mauve-800: oklch(0.427 0.099 325);
+  --color-mauve-900: oklch(0.367 0.081 325);
+  --color-mauve-950: oklch(0.256 0.059 325);
+}
+
+/* Book prose: tuned for long technical chapters. */
+.prose {
+  --tw-prose-body: var(--color-slate-700);
+  --tw-prose-headings: var(--color-mauve-900);
+  --tw-prose-links: var(--color-mauve-700);
+  --tw-prose-bold: var(--color-slate-900);
+  --tw-prose-code: var(--color-amber-800);
+  --tw-prose-quotes: var(--color-slate-700);
+  --tw-prose-quote-borders: var(--color-mauve-200);
+  --tw-prose-hr: var(--color-slate-200);
+  --tw-prose-th-borders: var(--color-slate-300);
+  --tw-prose-td-borders: var(--color-slate-200);
+  text-wrap: pretty;
+}
+
+/* Anchor targets clear the heading when jumping from the on-page contents. */
+.prose :is(h2, h3, h4) {
+  scroll-margin-top: --spacing(24);
+}
+
+.prose h2 {
+  margin-top: 2.5em;
+  padding-top: 0.6em;
+  border-top: 1px solid var(--color-mauve-100);
+}
+
+.prose h2 + h3,
+.prose h2 + p {
+  margin-top: 0.9em;
+}
+
+/* Identifiers like `-wal` and `PRAGMA busy_timeout` appear constantly; the
+   plugin's quote marks around inline code add noise at that density. */
+.prose :not(pre) > code {
+  background-color: var(--color-amber-50);
+  border-radius: 0.25rem;
+  padding: 0.15em 0.3em;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.prose :not(pre) > code::before,
+.prose :not(pre) > code::after {
+  content: none;
+}
+
+.prose pre {
+  border: 1px solid var(--color-slate-800);
+  border-radius: 0.5rem;
+  font-size: 0.875em;
+}
+
+.prose a {
+  text-underline-offset: 2px;
+  text-decoration-thickness: 1px;
+}
+
+.prose a:hover {
+  color: var(--color-mauve-900);
+}
+
+/* Product and technology names, marked by the rehype-products plugin. Weight and
+   depth only: the palette already spends mauve on headings and amber on code, and a
+   third hue at this density would fight both. */
+.prose .product {
+  font-weight: 500;
+  color: var(--color-slate-900);
+  white-space: nowrap;
+}
+
+/* Tables stay real tables so columns align. A table too wide for the measure goes
+   in a <div class="not-prose overflow-x-auto"> in the MDX; see _vault/collection.md. */
+.prose table {
+  font-size: 0.9em;
+}
+
+.prose :where(th, td):first-child {
+  padding-left: 0;
+}
+
+/* The plugin wraps blockquote text in typographic quote marks, which reads as a
+   quotation. Asides in this book are warnings, not quotations. */
+.prose blockquote {
+  font-style: normal;
+  font-weight: 400;
+}
+
+.prose blockquote p:first-of-type::before,
+.prose blockquote p:last-of-type::after {
+  content: none;
+}

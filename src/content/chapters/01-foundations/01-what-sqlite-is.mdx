@@ -12,7 +12,7 @@ SQLite is a C library that implements an SQL database engine. Your program links
 
 Almost everything else in this book follows from that one design decision.
 
-When you query Postgres or MySQL, your application opens a network connection to a separate program, sends the SQL text over a wire protocol, and waits. The server parses the statement, plans it, runs it, and streams rows back over the same connection. Two processes are involved, often two machines.
+When you query a client/server engine like Postgres or MySQL, your application opens a network connection to a separate program, sends the SQL text over a wire protocol, and waits. The server parses the statement, plans it, runs it, and streams rows back over the same connection. Two processes are involved, often two machines.
 
 When you query SQLite, the SQL never leaves your process. The library parses the statement, compiles it to bytecode, runs the bytecode, and pulls the pages it needs out of the database file through ordinary file reads. A query that returns a single row by primary key takes microseconds, because nothing crosses a network and nothing crosses a process boundary. There is no connection to establish, no handshake to authenticate, and no serialization step to pay for on the way out.
 
@@ -26,13 +26,13 @@ A SQLite database is one file. The schema, every table, every index, every view,
 
 Two temporary companion files can sit next to the main one while the database is in use. In the default rollback journal mode you may see a `-journal` file. In write-ahead logging mode you will see `-wal` and `-shm` files. Both are working files rather than parts of the database, and both are cleaned up when the last connection closes. <ChapterRef id="transactions-and-concurrency" /> explains what they contain and <ChapterRef id="durability-crashes-and-recovery" /> explains what to do when you find one left behind after a crash.
 
-The format itself is stable to an unusual degree. Every release of SQLite 3 can read and write files created by SQLite 3.0.0, which shipped on 2004-06-18, and the developers commit to keeping that true for all future SQLite 3 releases. Older releases can usually read files written by newer ones as well, though that direction is not guaranteed once a new feature writes something the old code has never seen. The US Library of Congress lists SQLite as a recommended storage format for long-term preservation of digital content, which is a fair summary of how much the stability promise is worth.
+The format itself is stable to an unusual degree. Every release of SQLite 3 can read and write files created by SQLite 3.0.0, which shipped on 2004-06-18, and the developers commit to keeping that true for all future SQLite 3 releases. Older releases can usually read files written by newer ones as well, though that direction is not guaranteed once a new feature writes something the old code has never seen. The US Library of Congress lists SQLite as a recommended storage format for long-term preservation of digital content, which shows how stable it is considered to be.
 
 ## Where it runs, and why it is everywhere
 
-The SQLite developers claim it is likely used more than all other database engines combined, and estimate more than a trillion databases in active use. That estimate comes from counting smartphones, each of which holds hundreds of SQLite files. Take the exact number with a grain of salt and the direction of it seriously.
+The SQLite developers claim it is likely used more than all other database engines combined, and estimate more than a trillion databases in active use. That estimate comes from counting smartphones, each of which holds hundreds of SQLite files.
 
-SQLite ships inside every Android, iOS, macOS, and Windows install. Firefox, Chrome, and Safari all use it. So do Dropbox, Skype, iTunes, TurboTax, and QuickBooks. PHP and Python bundle it in their standard distributions. Most televisions, set-top boxes, and car infotainment systems have a copy. The developers put it in the top five most deployed software modules of any kind, probably behind zlib.
+SQLite ships inside every Android, iOS, macOS, and Windows install. Firefox, Chrome, and Safari all use it. So do Dropbox, Skype, iTunes, and QuickBooks. PHP and Python bundle it in their standard distributions. Most televisions, set-top boxes, and car infotainment systems have a copy. The developers put it in the top five most deployed software modules of any kind, probably behind zlib.
 
 Four things explain the reach.
 
@@ -40,17 +40,31 @@ The code is public domain. There is no license to read, no attribution clause, a
 
 There is nothing to install. The source is distributed as a single large C file, the amalgamation, which you drop into your build.
 
-The testing is severe out of proportion to the size of the library. As of version 3.42.0 the engine was roughly 156,000 lines of C, against about 92 million lines of test code and test scripts, a ratio near 590 to 1. The core has 100% branch coverage and 100% MC/DC coverage, the standard used for avionics software. One of the fuzzers runs on the order of 500 million mutated cases per day.
+SQLite is very well tested. As of version 3.42.0 the engine was roughly 156,000 lines of C, against about 92 million lines of test code and test scripts, a ratio near 590 to 1. The core has 100% branch coverage and 100% MC/DC coverage, the standard used for avionics software.
 
 The file format does not move. Firmware written in 2009 can still open a database written by a phone shipped last week.
 
-SQLite is open source but not open contribution. Anyone can read the source and anyone can use it for anything, but the small core team does not merge outside patches. That is a deliberate trade of community throughput for control over reliability. Turso maintains libSQL, a fork of SQLite that does accept contributions, and is separately building Turso Database, a from-scratch rewrite of the engine in Rust. <ChapterRef id="turso-and-libsql" /> covers both, along with Turso Cloud, and untangles which name refers to which thing.
+### The amalgamation
+
+The second of those four deserves more than a sentence, because it is the mechanism behind most of the reach.
+
+SQLite is not developed as a single file. The core is 111 separate C files as of version 3.37.0, with another 22 implementing extensions that most builds want. What ships instead is the amalgamation, a generated file called `sqlite3.c` that concatenates all of them into one translation unit, accompanied by a single header, `sqlite3.h`, whose contents also appear in the first few thousand lines of the C file. As of the end of 2021 the amalgamation held about 238,000 lines, or 145,000 once blank lines and comments are removed.
+
+The practical effect is that adding a database engine to a program looks like adding a source file. There is no build system to adopt, no package to resolve, no shared library to locate at runtime, and no version to install on the target machine. You put two files in your source tree and hand them to the compiler you already use.
+
+That is the whole integration story on a system with a C compiler, and it is why SQLite turns up in set-top boxes and washing machines where nobody was going to provision a database server.
+
+One consequence matters for application work and is easy to miss. Because the engine is compiled from source into whatever links it, the SQLite version your program runs is the version of the amalgamation your driver vendored when it was built. It is not a system package you can upgrade independently, and two libraries in the same process can each carry their own. <ChapterRef id="ecosystem-map" /> covers how to find out what you actually have.
+
+### Open source, not open contribution
+
+SQLite is open source but not open contribution. Anyone can read the source and anyone can use it for anything, but the small core team does not merge outside patches. That is a deliberate choice to maintain control over reliability. Turso maintains libSQL, a fork of SQLite that does accept contributions, and is separately building Turso Database, a from-scratch rewrite of the engine in Rust. <ChapterRef id="turso-and-libsql" /> covers both, along with Turso Cloud, and untangles which name refers to which thing.
 
 ## What SQLite is good at
 
 Embedded devices and internet-of-things hardware. Phones, televisions, game consoles, cameras, watches, appliances, cars, aircraft, remote sensors, drones, medical devices, and robots. These need a database that requires no administrator, because there is nobody to administer it.
 
-An application file format. Instead of inventing a proprietary binary layout or writing a pile of XML, desktop applications save their documents as SQLite databases. Version control systems, financial tools, CAD packages, and media catalogs do this. You get atomic saves, partial updates without rewriting the whole document, and the ability to query the file with tools you did not write.
+An application file format. Instead of inventing a proprietary binary layout or writing a pile of XML, desktop applications save their documents as SQLite databases. Version control systems, financial tools, CAD packages, and media catalogs do this. You get atomic saves, partial updates without rewriting the whole document, and the ability to query the file with tools you did not write. It is not necessary to use .sqlite as the extension for your application format.
 
 Low to medium traffic websites. The sqlite.org guidance is that any site under 100,000 hits per day should be fine, and calls that a conservative estimate. For perspective, sqlite.org itself serves roughly 400,000 to 500,000 HTTP requests per day from SQLite. Most websites never come close to either number.
 
@@ -78,6 +92,10 @@ The database is a file on one machine. By default you cannot share it across mac
 
 If you need the database in more than one place, you replicate it rather than share it. Litestream streams the write-ahead log to object storage for continuous backup, covered in <ChapterRef id="integrity-backup-and-restore" />. Turso puts read replicas on each machine, so reads are served locally while writes go to a remote primary, covered in <ChapterRef id="turso-and-libsql" />.
 
+This is also what rules out most serverless platforms, and it is the way web applications most often get this wrong. A function on Lambda or Vercel gets a read-only deployment bundle and a scratch directory that disappears with the instance, and the platform runs as many instances as it likes, each with its own filesystem. A writable database there either vanishes or splits into as many divergent copies as there are instances, and moving it to shared network storage to fix that walks straight into the locking problem above.
+
+Two arrangements do work. A read-only database shipped inside the bundle is an excellent fit, because there are no writes to coordinate. And Turso and Cloudflare D1 put a writable SQLite-compatible database behind a network protocol, which is the trade you make to get the engine's ergonomics on this kind of infrastructure. Note too that SQLite avoids the problem serverless usually has with client/server databases, where short-lived instances exhaust a connection pool. Opening a SQLite database is opening a file. <ChapterRef id="deployment" /> covers the hosting options.
+
 ### No fine-grained access control
 
 There are no users, no roles, and no per-table or per-column grants. Access is all or nothing at the level of the file. Whatever authorization your application needs, your application implements. <ChapterRef id="security" /> covers the security consequences.
@@ -90,49 +108,35 @@ The documented maximum database size is 281 TB, raised from 140 TB in version 3.
 
 The comparison is usually framed as a competition and it is not one. The SQLite developers put it plainly. Client/server engines exist to serve a shared repository of enterprise data, so they optimize for scalability, concurrency, centralization, and control. SQLite exists to provide local storage for a single application or device, so it optimizes for economy, efficiency, reliability, independence, and simplicity. The useful question is which problem you have.
 
-Choose Postgres or MySQL when several separate programs need to reach the same data over a network, when the workload is write-heavy, when you need to run more than one application server against one dataset, when the data is heading toward a terabyte, or when you need database-enforced permissions per user.
+Choose a client/server engine, such as Postgres or MySQL, when several separate programs need to reach the same data over a network, when the workload is write-heavy, when you need to run more than one application server against one dataset, when the data is heading toward a terabyte, or when you need database-enforced permissions per user.
 
 Choose SQLite when one application owns the data. That covers desktop and mobile applications, command line tools, background jobs, test suites, caches, and a surprisingly large share of web applications, specifically the ones that run on a single server and will keep running on a single server.
 
 The two also compose. Nothing stops you running Postgres as the system of record and SQLite as a local cache, an analysis workspace, or a transfer format, and plenty of production systems do exactly that.
 
-One practical difference is worth naming early, because it will bite otherwise. SQLite's type system is looser than Postgres's by default. A column declared `INTEGER` will accept the string `'banana'` unless you opt into strict tables. <ChapterRef id="types" /> covers type affinity and the `STRICT` keyword, and explains why the default is what it is.
+One practical difference is worth naming early. Other SQL engines reject a string like `'banana'` in a column declared `INTEGER`. SQLite stores it. A declared type in SQLite is a preference for how values are converted, not a rule about what the column will accept, and the conversion is skipped when it cannot be done. <ChapterRef id="types" /> covers type affinity and the `STRICT` keyword, and explains why the default is what it is.
 
 ## Versions that matter
 
 SQLite is one library, but which version of it you get is decided by your language runtime, your driver, or your operating system, and it is frequently not the newest. A .NET application gets its engine from SQLitePCLRaw rather than from the top-level package it references. A Python script gets whatever the interpreter was compiled against. A Node application may get one version from `node:sqlite` and a different one from `better-sqlite3`. Before you rely on a feature, check `select sqlite_version();` on the connection your application actually uses. <ChapterRef id="ecosystem-map" /> covers how to find out.
 
-The features below are the ones whose absence changes how you write SQL. Appendix D has the full table.
+The features below are some of the ones whose absence changes how you write SQL. Appendix D has the full table.
 
 Version 3.7.0, released 2010-07-21, added write-ahead logging. This is the setting that lets readers run while a writer works, and it is the first pragma most production configurations set.
 
-Version 3.8.0, released 2013-08-26, added partial indexes and switched to the current query planner.
-
-Version 3.8.3, released 2014-02-03, added common table expressions and the `WITH` clause, recursive ones included.
-
-Version 3.9.0, released 2015-10-14, added FTS5 for full text search, the JSON functions, and indexes on expressions.
+Version 3.9.0, released 2015-10-14, added FTS5 for full text search, and the JSON functions.
 
 Version 3.24.0, released 2018-06-04, added UPSERT in the PostgreSQL style, meaning `ON CONFLICT DO UPDATE` and `ON CONFLICT DO NOTHING`. Before this, the workaround was `INSERT OR REPLACE`, which deletes and reinserts the row and takes your other columns with it.
 
 Version 3.25.0, released 2018-09-15, added window functions and `ALTER TABLE RENAME COLUMN`.
 
-Version 3.30.0, released 2019-10-04, added the `FILTER` clause on aggregates and `NULLS FIRST` and `NULLS LAST` in `ORDER BY`.
-
 Version 3.31.0, released 2020-01-22, added generated columns, both virtual and stored.
 
-Version 3.33.0, released 2020-08-14, added `UPDATE ... FROM` and raised the maximum database size to 281 TB.
-
-Version 3.35.0, released 2021-03-12, added `RETURNING` on `INSERT`, `UPDATE`, and `DELETE`, added `ALTER TABLE DROP COLUMN`, added the built-in math functions, and added the `MATERIALIZED` and `NOT MATERIALIZED` hints for CTEs. This is the single most useful upgrade target for application code, because `RETURNING` removes a round trip after almost every write.
+Version 3.35.0, released 2021-03-12, added `RETURNING` on `INSERT`, `UPDATE`, and `DELETE`. This is the single most useful upgrade target for application code, because `RETURNING` removes a round trip after almost every write.
 
 Version 3.37.0, released 2021-11-27, added `STRICT` tables.
 
-Version 3.38.0, released 2022-02-22, made the JSON functions available by default rather than as an optional extension, added the `->` and `->>` operators, and added `unixepoch()`.
-
 Version 3.39.0, released 2022-06-25, added `RIGHT JOIN` and `FULL OUTER JOIN`. Older versions have `LEFT JOIN` only, and the standard workaround is to swap the tables or use a union.
-
-Version 3.44.0, released 2023-11-01, added `ORDER BY` inside aggregate functions, which matters most for `group_concat`, and added `concat()` and `concat_ws()`.
-
-Version 3.45.0, released 2024-01-15, rewrote the JSON functions around JSONB, a binary representation that avoids reparsing text on every call.
 
 Version 3.47.0, released 2024-10-21, shipped `sqlite3_rsync`, a utility that syncs one database to another by transferring only changed pages. <ChapterRef id="integrity-backup-and-restore" /> compares it with `.backup` and `VACUUM INTO`.
 
@@ -144,4 +148,7 @@ From here on, the book assumes you are building an application that owns its dat
 
 Where a topic changes under a different setup, whether that is a read-only database shipped inside an application bundle, an in-memory database in a test suite, several attached databases, or replicas across machines, the chapter says so and points at the one that covers it.
 
-<ChapterRef id="getting-started" /> gets the command line shell installed and introduces the two datasets used throughout the book. <ChapterRef id="sql-crash-course" /> covers the SQL you need before the querying chapters in Part III assume it.
+<ChapterRef id="getting-started" /> gets the command line shell installed and
+introduces the two datasets used throughout the book.
+<ChapterRef id="sql-crash-course" /> covers the SQL you need before the querying
+chapters in Part III assume it.
