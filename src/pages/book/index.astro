@@ -1,0 +1,37 @@
+---
+import { getBookParts } from "../../lib/book";
+import BookLayout from "../../layouts/BookLayout.astro";
+
+const parts = await getBookParts();
+console.log("parts", parts);
+---
+
+<BookLayout
+  title="Table of Contents"
+  description="Every chapter of the SQLite Reference."
+>
+  <main class="mx-auto max-w-3xl px-6 py-12">
+    <h1 class="text-4xl font-bold">SQLite Reference</h1>
+    {
+      parts.map((part) => (
+        <section class="mt-10">
+          <h2 class="text-sm uppercase tracking-wide text-slate-500">
+            {part.title}
+          </h2>
+          <ol class="mt-3 space-y-2">
+            {part.chapters.map((chapter) => (
+              <li>
+                <a href={chapter.href}>
+                  {chapter.number}. {chapter.entry.data.title}
+                </a>
+                {chapter.entry.data.draft && (
+                  <span class="ml-2 text-xs text-amber-600">draft</span>
+                )}
+              </li>
+            ))}
+          </ol>
+        </section>
+      ))
+    }
+  </main>
+</BookLayout>

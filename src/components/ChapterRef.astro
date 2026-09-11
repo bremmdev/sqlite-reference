@@ -1,0 +1,39 @@
+---
+/**
+ * Cross-reference another chapter by id, never by number:
+ *   <ChapterRef id="transactions-and-concurrency" /> -> "Chapter 27"
+ * Renders the live number, so inserting chapters cannot make the text lie.
+ *
+ * A chapter that is not written yet renders as a placeholder rather than
+ * failing the build, and is reported in the dev server log.
+ */
+import { getChapterRef } from "../lib/book";
+
+interface Props {
+  id: string;
+  /** Include the chapter title after the number. */
+  withTitle?: boolean;
+}
+
+const { id, withTitle = false } = Astro.props;
+const chapter = await getChapterRef(id);
+
+if (!chapter && import.meta.env.DEV) {
+  console.warn(`[book] ChapterRef points at an unwritten chapter: "${id}"`);
+}
+
+const label = chapter?.partSlug === "appendices" ? "Appendix" : "Chapter";
+---
+
+{
+  chapter ? (
+    <a href={chapter.href}>
+      {label} {chapter.number}
+      {withTitle && <>, {chapter.entry.data.title}</>}
+    </a>
+  ) : (
+    <span class="text-slate-400" title="This chapter is not written yet">
+      Chapter &ldquo;{id}&rdquo;
+    </span>
+  )
+}

@@ -1,0 +1,72 @@
+---
+import { render } from "astro:content";
+import { getBookChapters, getChapterNav } from "../../lib/book";
+import BookLayout from "../../layouts/BookLayout.astro";
+
+export async function getStaticPaths() {
+  const chapters = await getBookChapters();
+  return chapters.map((chapter) => ({ params: { id: chapter.entry.id } }));
+}
+
+const { id } = Astro.params;
+const { current, prev, next } = await getChapterNav(id!);
+const { Content, headings } = await render(current.entry);
+---
+
+<BookLayout
+  title={current.entry.data.title}
+  description={current.entry.data.description}
+>
+  <article class="mx-auto max-w-3xl px-6 py-12">
+    <p class="text-sm uppercase tracking-wide text-slate-500">
+      {current.partTitle}
+    </p>
+    <h1 class="mt-2 text-4xl font-bold">
+      {current.number}. {current.entry.data.title}
+    </h1>
+
+    {
+      headings.length > 0 && (
+        <nav
+          aria-label="On this page"
+          class="mt-8 border-l-2 border-slate-200 pl-4"
+        >
+          <ul class="space-y-1 text-sm">
+            {headings
+              .filter((heading) => heading.depth === 2)
+              .map((heading) => (
+                <li>
+                  <a href={`#${heading.slug}`}>{heading.text}</a>
+                </li>
+              ))}
+          </ul>
+        </nav>
+      )
+    }
+
+    <div class="prose mt-10 max-w-none">
+      <Content />
+    </div>
+
+    <nav
+      class="mt-16 flex justify-between gap-8 border-t border-slate-200 pt-6 text-sm"
+    >
+      {
+        prev ? (
+          <a href={prev.href}>
+            ← {prev.number}. {prev.entry.data.title}
+          </a>
+        ) : (
+          <span />
+        )
+      }
+      {
+        next && (
+          <a href={next.href} class="text-right">
+            {next.number}. {next.entry.data.title} →
+          </a>
+        )
+      }
+    </nav>
+  </article>
+</BookLayout>
