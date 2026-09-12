@@ -152,3 +152,60 @@ Where a topic changes under a different setup, whether that is a read-only datab
 introduces the two datasets used throughout the book.
 <ChapterRef id="sql-crash-course" /> covers the SQL you need before the querying
 chapters in Part III assume it.
+
+## Takeaways
+
+The points from this chapter that change what you do, rather than what you know.
+
+- **Think "library, not server."** No process, no port, no
+  connection, and a primary key lookup in microseconds. The same fact is
+  why nothing outside the machine can reach the file. When SQLite behaves in a way
+  that surprises you, this is usually the reason.
+
+- **The fit question is ownership, not scale.** SQLite suits a database owned by one
+  application on one host. The moment several programs on several machines need the
+  same data, you want a client/server engine, however small the dataset is.
+
+- **Set `PRAGMA journal_mode = WAL` and `PRAGMA busy_timeout` before anything else.**
+  Journal mode is stored in the database file, so it is set once per database. The
+  busy timeout is a property of a connection and defaults to zero, so set it on every
+  connection your application opens, typically to 5000 milliseconds. Together they turn
+  the single-writer rule into a queue. Without the timeout, a second writer gets
+  `SQLITE_BUSY` immediately rather than waiting its turn.
+
+  <ChapterRef id="transactions-and-concurrency" /> covers both.
+
+- **Around 1,000 sustained writes per second is where you reconsider.** It is an order
+  of magnitude, not a limit, and it moves with your disk and your transaction sizes.
+  Reads have no equivalent ceiling.
+
+- **Never put the database on a network filesystem.** Lock handling on NFS and SMB is
+  inconsistent enough that corruption is a realistic outcome. If the data is needed in
+  more than one place, replicate it with Litestream or Turso instead of sharing the
+  file.
+
+- **No writable database on serverless.** The filesystem is scratch space and there are
+  as many of them as there are instances. A read-only database shipped in the bundle is
+  an excellent fit; a writable one needs Turso or Cloudflare D1.
+
+  <ChapterRef id="deployment" /> covers the options.
+
+- **Your SQLite version is whatever your driver vendored.** It is compiled in, not
+  installed, so you cannot upgrade it independently and two libraries in one process may
+  differ. Run `select sqlite_version();` on the connection the application actually uses
+  to check the version.
+
+- **Access control is file permissions and nothing else.** Any rule finer than "this
+  process may open this file" is your application's job.
+
+  <ChapterRef id="security" /> covers the consequences.
+
+- **A declared type is a preference, not a constraint.** An `INTEGER` column will accept
+  `'banana'` and store it as text. Use `STRICT` tables when you want the rule.
+
+  <ChapterRef id="types" /> explains why the default is what it is.
+
+- **Copying the file is a backup only when nothing is writing.** A database in use has
+  `-wal` and `-shm` beside it, and the `-wal` holds committed data the main file does not
+  yet contain. For a copy taken while the database is live, use `.backup`, `VACUUM INTO`,
+  or `sqlite3_rsync`. <ChapterRef id="integrity-backup-and-restore" /> compares them.
