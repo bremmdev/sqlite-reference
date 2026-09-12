@@ -3,22 +3,34 @@ import { getBookParts } from "@lib/book";
 import BookLayout from "@layouts/BookLayout.astro";
 
 const parts = await getBookParts();
-const chapterCount = parts.reduce((total, part) => total + part.chapters.length, 0);
+const chapterCount = parts.reduce(
+  (total, part) => total + part.chapters.length,
+  0,
+);
 ---
 
-<BookLayout title="Table of Contents" description="Every chapter of the SQLite Reference.">
+<BookLayout
+  title="Table of Contents"
+  description="Every chapter of the SQLite Reference."
+>
   <main class="mx-auto max-w-2xl px-6 py-16">
-    <h1 class="text-5xl font-bold tracking-tight text-mauve-900">SQLite Reference</h1>
+    <h1 class="text-5xl font-bold tracking-tight text-accent">
+      SQLite Reference
+    </h1>
     <p class="mt-4 text-lg text-slate-500">
-      {chapterCount} {chapterCount === 1 ? "chapter" : "chapters"} across{" "}
-      {parts.length} {parts.length === 1 ? "part" : "parts"}.
+      {chapterCount}
+      {chapterCount === 1 ? "chapter" : "chapters"} across{" "}
+      {parts.length}
+      {parts.length === 1 ? "part" : "parts"}.
     </p>
 
     {
       parts.map((part) => (
         <section class="mt-12">
-          <h2 class="text-xs font-medium uppercase tracking-widest text-slate-500">{part.title}</h2>
-          <ol class="mt-4 divide-y divide-slate-100">
+          <h2 class="text-xs font-medium uppercase tracking-widest text-slate-500">
+            {part.title}
+          </h2>
+          <ol class="mt-4 divide-y divide-slate-100" c>
             {part.chapters.map((chapter) => (
               <li>
                 <a href={chapter.href} class="group flex gap-4 py-3">
@@ -26,7 +38,7 @@ const chapterCount = parts.reduce((total, part) => total + part.chapters.length,
                     {chapter.number}
                   </span>
                   <span class="min-w-0">
-                    <span class="block font-medium text-mauve-900 group-hover:text-mauve-600">
+                    <span class="block font-medium text-accent group-hover:text-accent-light">
                       {chapter.entry.data.title}
                       {chapter.entry.data.draft && (
                         <span class="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-xs font-normal text-amber-700">

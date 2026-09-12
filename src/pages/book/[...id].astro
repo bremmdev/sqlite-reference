@@ -19,11 +19,11 @@ const sections = headings.filter((heading) => heading.depth === 2);
   <article class="mx-auto max-w-2xl px-6 py-16">
     <header>
       <p class="flex items-center gap-2 text-xs font-medium uppercase tracking-widest text-slate-500">
-        <a href="/book" class="hover:text-mauve-700">{current.partTitle}</a>
+        <a href="/book" class="hover:text-accent-link">{current.partTitle}</a>
         <span class="text-slate-300">/</span>
         <span class="text-slate-400">Chapter {current.number}</span>
       </p>
-      <h1 class="mt-3 text-pretty text-4xl font-bold tracking-tight text-mauve-900">
+      <h1 class="mt-3 text-pretty text-4xl font-bold tracking-tight text-accent">
         {current.entry.data.title}
       </h1>
       <p class="mt-4 text-lg text-pretty text-slate-500">{current.entry.data.description}</p>
@@ -33,19 +33,19 @@ const sections = headings.filter((heading) => heading.depth === 2);
       sections.length > 1 && (
         <nav
           aria-label="On this page"
-          class="mt-12 overflow-hidden rounded-xl bg-mauve-100/50"
+          class="mt-12 overflow-hidden rounded-xl bg-accent-surface/50"
         >
-          <div class="border-l-4 border-mauve-300 px-6 py-5">
-            <p class="text-sm font-semibold tracking-tight text-mauve-800">On this page</p>
+          <div class="border-l-4 border-accent px-6 py-5">
+            <p class="text-sm font-semibold tracking-tight text-accent">On this page</p>
             <ol class="mt-4 space-y-2.5 text-sm">
               {sections.map((heading, index) => (
                 <li class="flex gap-3">
-                  <span class="w-4 shrink-0 pt-px text-right text-xs font-medium tabular-nums text-mauve-400">
+                  <span class="w-4 shrink-0 pt-px text-right text-xs font-medium tabular-nums text-accent-light">
                     {index + 1}
                   </span>
                   <a
                     href={`#${heading.slug}`}
-                    class="font-medium text-mauve-800 transition-colors hover:text-mauve-600"
+                    class="font-medium text-accent transition-colors hover:text-accent-light"
                   >
                     {heading.text}
                   </a>
@@ -67,7 +67,7 @@ const sections = headings.filter((heading) => heading.depth === 2);
           prev && (
             <a href={prev.href} class="group block">
               <span class="text-xs uppercase tracking-widest text-slate-400">Previous</span>
-              <span class="mt-1 block text-slate-700 group-hover:text-mauve-700">
+              <span class="mt-1 block text-slate-700 group-hover:text-accent-link">
                 {prev.number}. {prev.entry.data.title}
               </span>
             </a>
@@ -79,7 +79,7 @@ const sections = headings.filter((heading) => heading.depth === 2);
           next && (
             <a href={next.href} class="group block">
               <span class="text-xs uppercase tracking-widest text-slate-400">Next</span>
-              <span class="mt-1 block text-slate-700 group-hover:text-mauve-700">
+              <span class="mt-1 block text-slate-700 group-hover:text-accent-link">
                 {next.number}. {next.entry.data.title}
               </span>
             </a>
