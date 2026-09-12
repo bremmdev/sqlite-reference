@@ -26,6 +26,7 @@ export const PRODUCTS = [
   "System.Data.SQLite", "Dapper", "EF Core", "Entity Framework", "Drizzle", "Prisma",
   // Tools
   "sqlite-utils", "DB Browser for SQLite", "DB Browser", "DBeaver", "sqlite3_rsync",
+  "Homebrew", "VS Code",
   // Extensions and encryption
   "SQLCipher", "sqlean", "sqlite-vec", "R*Tree", "geopoly", "ICU", "SEE",
 ];

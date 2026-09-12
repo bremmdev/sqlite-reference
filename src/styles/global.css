@@ -104,3 +104,24 @@
 .prose blockquote p:last-of-type::after {
   content: none;
 }
+
+/* Figures. MDX wraps both the image and the caption text in paragraphs; the
+   figure owns the spacing instead, so the caption sits under its screenshot
+   rather than reading as the next paragraph. */
+.prose figure>p,
+.prose figcaption>p {
+  margin: 0;
+}
+
+/* Images are centred in the measure. Screenshots are rarely exactly the column
+   width, and one flush left with a ragged gap beside it reads as misplaced. */
+.prose img {
+  display: block;
+  margin-inline: auto;
+}
+
+/* Screenshots of light interfaces need an edge or they bleed into the page. */
+.prose figure img {
+  border: 1px solid var(--color-slate-200);
+  border-radius: 0.375rem;
+}

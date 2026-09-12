@@ -149,9 +149,8 @@ From here on, the book assumes you are building an application that owns its dat
 Where a topic changes under a different setup, whether that is a read-only database shipped inside an application bundle, an in-memory database in a test suite, several attached databases, or replicas across machines, the chapter says so and points at the one that covers it.
 
 <ChapterRef id="getting-started" /> gets the command line shell installed and
-introduces the two datasets used throughout the book.
-<ChapterRef id="sql-crash-course" /> covers the SQL you need before the querying
-chapters in Part III assume it.
+introduces the two datasets used throughout the book. <ChapterRef id="sql-crash-course" />
+covers the SQL you need before the querying chapters in Part III assume it.
 
 ## Takeaways
 
@@ -171,9 +170,8 @@ The points from this chapter that change what you do, rather than what you know.
   busy timeout is a property of a connection and defaults to zero, so set it on every
   connection your application opens, typically to 5000 milliseconds. Together they turn
   the single-writer rule into a queue. Without the timeout, a second writer gets
-  `SQLITE_BUSY` immediately rather than waiting its turn.
-
-  <ChapterRef id="transactions-and-concurrency" /> covers both.
+  `SQLITE_BUSY` immediately rather than waiting its turn. <ChapterRef id="transactions-and-concurrency" />
+  covers both.
 
 - **Around 1,000 sustained writes per second is where you reconsider.** It is an order
   of magnitude, not a limit, and it moves with your disk and your transaction sizes.
@@ -186,9 +184,8 @@ The points from this chapter that change what you do, rather than what you know.
 
 - **No writable database on serverless.** The filesystem is scratch space and there are
   as many of them as there are instances. A read-only database shipped in the bundle is
-  an excellent fit; a writable one needs Turso or Cloudflare D1.
-
-  <ChapterRef id="deployment" /> covers the options.
+  an excellent fit; a writable one needs Turso or Cloudflare D1. <ChapterRef id="deployment" />
+  covers the options.
 
 - **Your SQLite version is whatever your driver vendored.** It is compiled in, not
   installed, so you cannot upgrade it independently and two libraries in one process may
@@ -196,14 +193,12 @@ The points from this chapter that change what you do, rather than what you know.
   to check the version.
 
 - **Access control is file permissions and nothing else.** Any rule finer than "this
-  process may open this file" is your application's job.
-
-  <ChapterRef id="security" /> covers the consequences.
+  process may open this file" is your application's job. <ChapterRef id="security" />
+  covers the consequences.
 
 - **A declared type is a preference, not a constraint.** An `INTEGER` column will accept
-  `'banana'` and store it as text. Use `STRICT` tables when you want the rule.
-
-  <ChapterRef id="types" /> explains why the default is what it is.
+  `'banana'` and store it as text. Use `STRICT` tables when you want the
+  rule. <ChapterRef id="types" /> explains why the default is what it is.
 
 - **Copying the file is a backup only when nothing is writing.** A database in use has
   `-wal` and `-shm` beside it, and the `-wal` holds committed data the main file does not
