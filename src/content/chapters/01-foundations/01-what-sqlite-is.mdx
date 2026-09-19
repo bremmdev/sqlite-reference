@@ -24,7 +24,7 @@ The library is small enough to be beside the point in most builds. Compiled with
 
 A SQLite database is one file. The schema, every table, every index, every view, every trigger, and all the data live inside it. Copy the file and you have copied the database. Delete the file and the database is gone. Send the file to a colleague and they open it with the same library and see exactly what you see, on a different operating system and a different processor.
 
-Two temporary companion files can sit next to the main one while the database is in use. In the default rollback journal mode you may see a `-journal` file. In write-ahead logging mode you will see `-wal` and `-shm` files. Both are working files rather than parts of the database, and both are cleaned up when the last connection closes. <ChapterRef id="transactions-and-concurrency" /> explains what they contain and <ChapterRef id="durability-crashes-and-recovery" /> explains what to do when you find one left behind after a crash.
+Temporary companion files can sit next to the main one while the database is in use. In the default rollback journal mode you may see a `-journal` file; it appears when a write transaction starts and is removed when that transaction ends, so between writes there is usually nothing there. In write-ahead logging mode you will see `-wal` and `-shm` files, which stay for as long as any connection is open and are normally removed when the last one closes cleanly. Neither is a file you manage yourself, and neither is something to copy or delete by hand. <ChapterRef id="transactions-and-concurrency" /> explains what they contain and why a `-wal` file does not shrink just because its contents have been written back, and <ChapterRef id="durability-crashes-and-recovery" /> explains what to do when you find one left behind after a crash.
 
 The format itself is stable to an unusual degree. Every release of SQLite 3 can read and write files created by SQLite 3.0.0, which shipped on 2004-06-18, and the developers commit to keeping that true for all future SQLite 3 releases. Older releases can usually read files written by newer ones as well, though that direction is not guaranteed once a new feature writes something the old code has never seen. The US Library of Congress lists SQLite as a recommended storage format for long-term preservation of digital content, which shows how stable it is considered to be.
 
@@ -66,7 +66,7 @@ Embedded devices and internet-of-things hardware. Phones, televisions, game cons
 
 An application file format. Instead of inventing a proprietary binary layout or writing a pile of XML, desktop applications save their documents as SQLite databases. Version control systems, financial tools, CAD packages, and media catalogs do this. You get atomic saves, partial updates without rewriting the whole document, and the ability to query the file with tools you did not write. It is not necessary to use .sqlite as the extension for your application format.
 
-Low to medium traffic websites. The sqlite.org guidance is that any site under 100,000 hits per day should be fine, and calls that a conservative estimate. For perspective, sqlite.org itself serves roughly 400,000 to 500,000 HTTP requests per day from SQLite. Most websites never come close to either number.
+Low to medium traffic websites. The sqlite.org guidance is that any site under 100,000 hits per day should be fine, and calls that a conservative estimate. For perspective, sqlite.org itself reported 400,000 to 500,000 HTTP requests per day back in 2015, with 15 to 20 percent of those hitting the database. Most websites never come close to either number.
 
 A cache in front of an enterprise database. Keep a local SQLite copy of the slices of data an application reads constantly. Reads stop crossing the network, the central server sheds load, and the application keeps working during an outage.
 
@@ -82,7 +82,7 @@ A stand-in during demos and tests. A test suite can create a fresh database per 
 
 SQLite allows exactly one writer at any instant. Readers can run concurrently with each other, and in write-ahead logging mode readers can run concurrently with the single writer, but two writers never overlap.
 
-For most applications this is a non-issue, because writes are short. Each one takes a few dozen milliseconds at most, and the next writer takes the lock as soon as the previous one releases it. Writers queue rather than fail, provided you have told the library to wait. Two settings make that work in practice, `PRAGMA journal_mode = WAL` and `PRAGMA busy_timeout` set to something like 5000 milliseconds, so that a blocked writer waits instead of returning an error immediately. <ChapterRef id="transactions-and-concurrency" /> covers both.
+For most applications this is a non-issue, because writes are short. A small write transaction in write-ahead logging mode takes on the order of a millisecond, and the next writer takes the lock as soon as the previous one releases it. Writers queue rather than fail, provided you have told the library to wait. Two settings make that work in practice, `PRAGMA journal_mode = WAL` and `PRAGMA busy_timeout` set to something like 5000 milliseconds, so that a blocked writer waits instead of returning an error immediately. <ChapterRef id="transactions-and-concurrency" /> covers both.
 
 The setting has a ceiling. Somewhere above roughly 1,000 sustained writes per second, on ordinary hardware, the queue stops draining fast enough and a client/server engine becomes the better answer. That threshold moves with your disk, your transaction sizes, and how much work each write does, so treat it as an order of magnitude rather than a limit to design against.
 
@@ -102,7 +102,7 @@ There are no users, no roles, and no per-table or per-column grants. Access is a
 
 ### Size
 
-The documented maximum database size is 281 TB, raised from 140 TB in version 3.33.0. That number is a theoretical ceiling and not advice. In practice, once a single database approaches a terabyte, the operations around it get uncomfortable well before the format does, including backup windows, `VACUUM` time, and integrity checks. Treat a terabyte as the point where you start evaluating alternatives, and note that splitting one large database into several smaller ones is often the alternative you want. <ChapterRef id="multiple-databases" /> covers that.
+The documented maximum database size is 281 TB, raised from 140 TB in version 3.33.0. That figure assumes the maximum 64 KiB page size; at the 4 KiB default the ceiling is closer to 17 TB. Either number is a theoretical ceiling and not advice. In practice, once a single database approaches a terabyte, the operations around it get uncomfortable well before the format does, including backup windows, `VACUUM` time, and integrity checks. Treat a terabyte as the point where you start evaluating alternatives, and note that splitting one large database into several smaller ones is often the alternative you want. <ChapterRef id="multiple-databases" /> covers that.
 
 ## SQLite compared with Postgres and MySQL
 
@@ -124,7 +124,7 @@ The features below are some of the ones whose absence changes how you write SQL.
 
 Version 3.7.0, released 2010-07-21, added write-ahead logging. This is the setting that lets readers run while a writer works, and it is the first pragma most production configurations set.
 
-Version 3.9.0, released 2015-10-14, added FTS5 for full text search, and the JSON functions.
+Version 3.9.0, released 2015-10-14, added FTS5 for full text search and the JSON functions, though both arrived as compile-time extensions rather than standard equipment. The JSON functions became built in by default in version 3.38.0, released 2022-02-22, which also added the `->` and `->>` operators. FTS5 still depends on how your build was compiled.
 
 Version 3.24.0, released 2018-06-04, added UPSERT in the PostgreSQL style, meaning `ON CONFLICT DO UPDATE` and `ON CONFLICT DO NOTHING`. Before this, the workaround was `INSERT OR REPLACE`, which deletes and reinserts the row and takes your other columns with it.
 
@@ -166,11 +166,13 @@ The points from this chapter that change what you do, rather than what you know.
   same data, you want a client/server engine, however small the dataset is.
 
 - **Set `PRAGMA journal_mode = WAL` and `PRAGMA busy_timeout` before anything else.**
-  Journal mode is stored in the database file, so it is set once per database. The
-  busy timeout is a property of a connection and defaults to zero, so set it on every
-  connection your application opens, typically to 5000 milliseconds. Together they turn
-  the single-writer rule into a queue. Without the timeout, a second writer gets
-  `SQLITE_BUSY` immediately rather than waiting its turn. <ChapterRef id="transactions-and-concurrency" />
+  WAL is the one journal mode stored in the database file, so it is set once per
+  database and survives reopening; the other modes are connection-level settings. The
+  busy timeout is a property of a connection too. The library default is zero, though
+  many drivers set their own, so check yours rather than assuming either way, and set it
+  explicitly on every connection your application opens, typically to 5000
+  milliseconds. Together they turn the single-writer rule into a queue. Without the
+  timeout, a second writer gets `SQLITE_BUSY` immediately rather than waiting its turn. <ChapterRef id="transactions-and-concurrency" />
   covers both.
 
 - **Around 1,000 sustained writes per second is where you reconsider.** It is an order
