@@ -387,7 +387,7 @@ const QUOTES = [
 ];
 
 // The journal has one owner, and every session belongs to them.
-const OWNER = "avery";
+const OWNER = "matt";
 
 // ---------------------------------------------------------------------------
 // Dates

@@ -178,8 +178,8 @@ CREATE INDEX idx_quote_author_nocase ON quote(author COLLATE NOCASE);
 --
 -- The NOCASE collation sits on the column, so the unique index inherits it and
 -- serves `WHERE username = ?` — the opposite of the quote index above, where
--- the collation is on the index alone. It also stops 'Avery' being registered
--- next to 'avery'.
+-- the collation is on the index alone. It also stops 'Matt' being registered
+-- next to 'matt'.
 CREATE TABLE user (
   id           INTEGER PRIMARY KEY,
   username     TEXT NOT NULL COLLATE NOCASE,
