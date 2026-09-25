@@ -37,12 +37,6 @@ that state the `ON DELETE` rules in the schema silently do nothing. Run
 `PRAGMA foreign_keys = ON;` after opening the database, or put it in
 `~/.sqliterc`. (`node:sqlite` turns it on by default.)
 
-About 200 KB. It is small on purpose: it is the dataset for learning the schema
-and the query language, where the answer being *correct* is the whole point. It
-is far too small to say anything about performance — every plan on a database
-this size is fast, including the bad ones. Part IV uses a second, much larger
-dataset for that.
-
 ### Rebuilding it
 
 ```bash
