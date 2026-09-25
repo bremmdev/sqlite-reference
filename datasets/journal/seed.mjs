@@ -9,8 +9,8 @@
  * rows, which is what lets the book print a query result and have it still be
  * true on the reader's copy.
  *
- * The content is invented. Names, entries, quotes and credentials are all
- * generated; the password hashes are random hex and authenticate nothing.
+ * The content is invented. Entries and credentials are generated; the password
+ * hash is random hex and authenticates nothing. The quotes are real ones.
  */
 
 import { DatabaseSync } from "node:sqlite";
@@ -27,7 +27,7 @@ const LAST_DAY = "2025-12-31";
 
 // The session table is written relative to a fixed instant rather than now(),
 // so "expired" and "active" stay stable forever.
-const CLOCK = "2026-01-15T09:00:00Z";
+const CLOCK = "2026-01-15 09:00:00"; // UTC, in the format SQLite itself uses
 
 // ---------------------------------------------------------------------------
 // Deterministic randomness
@@ -46,6 +46,11 @@ function makeRandom(seed) {
 }
 
 const rand = makeRandom(SEED);
+
+// A second, independent stream decides which entries are missing a mood or
+// tags. Drawing those from `rand` would shift every value after the first draw
+// and reshuffle the whole journal; a separate stream leaves the rest untouched.
+const gaps = makeRandom(SEED + 1);
 
 const pick = (xs) => xs[Math.floor(rand() * xs.length)];
 const chance = (p) => rand() < p;
@@ -103,6 +108,10 @@ const TAGS = {
   gardening: 9,
 };
 
+// Created, and never used. A tag on no entry is what makes LEFT JOIN and
+// NOT EXISTS return something an inner join cannot.
+const UNUSED_TAGS = ["travel"];
+
 // The mood vocabulary itself lives in schema.sql and is read back from the
 // database below, so there is no second copy here to fall out of step with it.
 
@@ -110,16 +119,16 @@ const TAGS = {
 // about work is usually tense and occasionally the best day of the month —
 // but skewed enough that GROUP BY on it says something.
 const MOOD_BY_TAG = {
-  relationship: { happy: 5, grateful: 4, sad: 3, neutral: 3, frustrated: 2, anxious: 2, proud: 1, determined: 1 },
-  coding: { determined: 5, frustrated: 5, proud: 4, neutral: 3, anxious: 2, happy: 2, grateful: 1, sad: 1 },
-  exercise: { proud: 5, determined: 4, happy: 3, neutral: 3, grateful: 2, frustrated: 2, anxious: 1, sad: 1 },
-  work: { frustrated: 6, anxious: 5, determined: 3, neutral: 3, proud: 2, sad: 2, happy: 1, grateful: 1 },
-  cat: { happy: 6, grateful: 5, neutral: 2, sad: 2, anxious: 1, proud: 1, determined: 1, frustrated: 1 },
-  music: { happy: 4, grateful: 3, proud: 3, determined: 3, neutral: 3, frustrated: 2, sad: 2, anxious: 1 },
-  health: { anxious: 5, determined: 4, grateful: 3, neutral: 3, frustrated: 3, sad: 2, happy: 1, proud: 1 },
-  sports: { happy: 4, frustrated: 4, proud: 3, neutral: 3, sad: 2, determined: 2, grateful: 1, anxious: 1 },
-  social: { happy: 5, grateful: 4, neutral: 3, anxious: 3, sad: 2, proud: 1, determined: 1, frustrated: 1 },
-  gardening: { grateful: 5, neutral: 4, happy: 3, proud: 3, determined: 2, frustrated: 2, sad: 1, anxious: 1 },
+  relationship: { happy: 5, grateful: 4, sad: 3, calm: 3, frustrated: 2, anxious: 2, proud: 1, determined: 1 },
+  coding: { determined: 5, frustrated: 5, proud: 4, calm: 3, anxious: 2, happy: 2, grateful: 1, sad: 1 },
+  exercise: { proud: 5, determined: 4, happy: 3, calm: 3, grateful: 2, frustrated: 2, anxious: 1, sad: 1 },
+  work: { frustrated: 6, anxious: 5, determined: 3, calm: 3, proud: 2, sad: 2, happy: 1, grateful: 1 },
+  cat: { happy: 6, grateful: 5, calm: 2, sad: 2, anxious: 1, proud: 1, determined: 1, frustrated: 1 },
+  music: { happy: 4, grateful: 3, proud: 3, determined: 3, calm: 3, frustrated: 2, sad: 2, anxious: 1 },
+  health: { anxious: 5, determined: 4, grateful: 3, calm: 3, frustrated: 3, sad: 2, happy: 1, proud: 1 },
+  sports: { happy: 4, frustrated: 4, proud: 3, calm: 3, sad: 2, determined: 2, grateful: 1, anxious: 1 },
+  social: { happy: 5, grateful: 4, calm: 3, anxious: 3, sad: 2, proud: 1, determined: 1, frustrated: 1 },
+  gardening: { grateful: 5, calm: 4, happy: 3, proud: 3, determined: 2, frustrated: 2, sad: 1, anxious: 1 },
 };
 
 // Each scene is [title, sentence, months?]. The title travels with the sentence
@@ -236,7 +245,7 @@ const SCENES = {
   social: [
     ["Birthday", "Birthday. Small, six people, food at home, and it was exactly the right size."],
     ["Board games", "Friends over for board games and the evening ran until one in the morning."],
-    ["Dinner out", "Dinner out somewhere new. Too loud to talk and the food was worth it anyway."],
+    ["Dinner out", "Dinner out at a new café. Too loud to talk and the food was worth it anyway."],
     ["Coffee with an old friend", "Coffee with an old friend I had not seen since before the move. Two hours disappeared."],
     ["Wedding", "Wedding. Long day, good speeches, home late and completely done."],
     ["Cancelled plans", "Cancelled the plans and felt relieved, then slightly guilty about the relief."],
@@ -292,7 +301,7 @@ const REFLECTIONS = {
     "Nothing was solved and it did not matter.",
     "Good day. Straightforwardly good, which I should record more often.",
   ],
-  neutral: [
+  calm: [
     "An unremarkable day, which after the last few is not a complaint.",
     "Nothing much happened and nothing much needed to.",
     "Flat, not bad. Somewhere in the middle and stable there.",
@@ -352,30 +361,33 @@ const CLOSERS = [
   "Worth remembering.",
 ];
 
+// Attributions are to the source, in a common English translation, and none is
+// one of the famous misattributions. The author strings are what matter to the
+// book: three NULLs, and the same name stored with different capitalisation,
+// including a non-ASCII one that NOCASE cannot fold.
 const QUOTES = [
   ["The unexamined life is not worth living.", "Socrates"],
-  ["You have power over your mind, not outside events. Realise this, and you will find strength.", "Marcus Aurelius"],
+  ["The impediment to action advances action. What stands in the way becomes the way.", "Marcus Aurelius"],
   ["Very little is needed to make a happy life; it is all within yourself, in your way of thinking.", "marcus aurelius"],
   ["We suffer more often in imagination than in reality.", "Seneca"],
   ["It is not that we have a short time to live, but that we waste a lot of it.", "seneca"],
   ["First say to yourself what you would be; and then do what you have to do.", "Epictetus"],
   ["No man ever steps in the same river twice.", "Heraclitus"],
-  ["The obstacle is the way.", null],
+  ["Fall seven times, stand up eight.", null],
   ["Do the hard thing while it is still small.", null],
-  ["He who has a why to live can bear almost any how.", "Friedrich Nietzsche"],
+  ["If we have our own why of life, we shall get along with almost any how.", "Friedrich Nietzsche"],
   ["The best time to plant a tree was twenty years ago. The second best time is now.", null],
-  ["What we do now echoes in eternity.", "Marcus Aurelius"],
+  ["You could leave life right now. Let that determine what you do and say and think.", "Marcus Aurelius"],
   ["Waste no more time arguing what a good man should be. Be one.", "MARCUS AURELIUS"],
-  ["Man is not worried by real problems so much as by his imagined anxieties about real problems.", "Epictetus"],
-  ["Luck is what happens when preparation meets opportunity.", "Seneca"],
+  ["Men are disturbed not by things, but by the views which they take of things.", "Epictetus"],
+  ["While we are postponing, life speeds by.", "Seneca"],
   ["Begin at once to live, and count each separate day as a separate life.", "Seneca"],
+  ["Life can only be understood backwards; but it must be lived forwards.", "Søren Kierkegaard"],
+  ["Anxiety is the dizziness of freedom.", "SØREN KIERKEGAARD"],
 ];
 
-const USERS = [
-  ["avery", "admin"],
-  ["noor", "user"],
-  ["sam", "user"],
-];
+// The journal has one owner, and every session belongs to them.
+const OWNER = "avery";
 
 // ---------------------------------------------------------------------------
 // Dates
@@ -383,6 +395,8 @@ const USERS = [
 
 const DAY_MS = 86_400_000;
 const iso = (ms) => new Date(ms).toISOString().slice(0, 10);
+/** 'YYYY-MM-DD HH:MM:SS', UTC: the format of CURRENT_TIMESTAMP and datetime(). */
+const sqliteTime = (ms) => new Date(ms).toISOString().slice(0, 19).replace("T", " ");
 const monthOf = (day) => Number(day.slice(5, 7));
 
 function everyDay(from, to) {
@@ -491,6 +505,7 @@ db.exec("BEGIN");
 
 const insertTag = db.prepare("INSERT INTO tag (id, name) VALUES (?, ?)");
 for (const name of tagNames) insertTag.run(tagId.get(name), name);
+UNUSED_TAGS.forEach((name, i) => insertTag.run(tagNames.length + i + 1, name));
 
 const insertEntry = db.prepare(
   "INSERT INTO entry (date, title, content, mood_id) VALUES (?, ?, ?, ?)",
@@ -508,7 +523,18 @@ for (const day of writingDays(everyDay(FIRST_DAY, LAST_DAY))) {
 
   const { title, content } = buildEntry(month, primary, secondary, mood);
 
-  const { lastInsertRowid } = insertEntry.run(day, title, content, moodId.get(mood));
+  // Choosing a mood and tagging are both optional in the application, and a
+  // few entries skip them. The text is still written as if they had not.
+  const moodless = gaps() < 0.03;
+  const untagged = gaps() < 0.01;
+
+  const { lastInsertRowid } = insertEntry.run(
+    day,
+    title,
+    content,
+    moodless ? null : moodId.get(mood),
+  );
+  if (untagged) continue;
   for (const tag of [primary, ...secondary]) {
     insertEntryTag.run(Number(lastInsertRowid), tagId.get(tag));
   }
@@ -517,13 +543,15 @@ for (const day of writingDays(everyDay(FIRST_DAY, LAST_DAY))) {
 const insertQuote = db.prepare("INSERT INTO quote (id, content, author) VALUES (?, ?, ?)");
 QUOTES.forEach(([content, author], i) => insertQuote.run(i + 1, content, author));
 
-const insertUser = db.prepare(
-  "INSERT INTO user (id, username, passwordhash, salt, role) VALUES (?, ?, ?, ?, ?)",
+db.prepare("INSERT INTO user (id, username, passwordhash, salt) VALUES (1, ?, ?, ?)").run(
+  OWNER,
+  hex(128),
+  hex(32),
 );
-USERS.forEach(([username, role], i) => insertUser.run(i + 1, username, hex(128), hex(32), role));
 
-// A handful of sessions, one of them already expired as of CLOCK, so the prune
-// query in the application chapters has something to delete.
+// A dozen sessions across the owner's phone, laptop and work machine, four of
+// them already expired as of CLOCK, so the prune query in the application
+// chapters has something to delete.
 const insertSession = db.prepare(
   "INSERT INTO session (session_id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
 );
@@ -531,12 +559,7 @@ const clockMs = Date.parse(CLOCK);
 for (let i = 0; i < 12; i++) {
   const createdMs = clockMs - Math.floor(rand() * 40 * DAY_MS);
   const expiresMs = createdMs + 30 * DAY_MS;
-  insertSession.run(
-    hex(64),
-    1 + Math.floor(rand() * USERS.length),
-    new Date(createdMs).toISOString().replace(".000Z", "Z"),
-    new Date(expiresMs).toISOString().replace(".000Z", "Z"),
-  );
+  insertSession.run(hex(64), 1, sqliteTime(createdMs), sqliteTime(expiresMs));
 }
 
 db.exec("COMMIT");

@@ -1,8 +1,8 @@
 -- ============================================================================
 -- journal.db — the book's first running dataset
 --
--- A personal journal: one entry per day you wrote, each classified by a single
--- mood and any number of tags, plus a quotes table and the session storage a
+-- A personal journal: one entry per day you wrote, each given at most one mood
+-- and any number of tags, plus a quotes table and the session storage a
 -- small web application needs.
 --
 -- Build an empty database from this file:
@@ -16,7 +16,14 @@
 -- picked up and argued properly in a later chapter.
 -- ============================================================================
 
-PRAGMA foreign_keys = OFF;   -- deferred until every table exists
+-- Foreign key enforcement is a property of the connection, not of the file.
+-- This line turns it on for whatever connection runs this script and nothing
+-- else: it is not stored in journal.db, and the sqlite3 shell starts every
+-- session with it off. Run `PRAGMA foreign_keys = ON;` yourself after opening
+-- the database, or the ON DELETE actions below silently do nothing. It has to
+-- come before BEGIN, because inside a transaction the pragma is a no-op.
+PRAGMA foreign_keys = ON;
+
 BEGIN;
 
 PRAGMA user_version = 1;
@@ -29,10 +36,14 @@ PRAGMA user_version = 1;
 -- three buckets, so a query can aggregate by sentiment without every entry
 -- carrying a redundant copy of it. This is the smallest useful example of a
 -- lookup table, and the join in front of nearly every query in Part III.
+--
+-- A CHECK constraint is the only thing standing between this column and any
+-- string at all: SQLite has no ENUM type, and a TEXT column accepts whatever it
+-- is given.
 CREATE TABLE mood (
   id        INTEGER PRIMARY KEY,
   name      TEXT NOT NULL,
-  sentiment TEXT NOT NULL              -- 'positive' | 'neutral' | 'negative'
+  sentiment TEXT NOT NULL CHECK (sentiment IN ('positive', 'neutral', 'negative'))
 );
 
 CREATE TABLE tag (
@@ -57,9 +68,16 @@ CREATE UNIQUE INDEX idx_mood_name ON mood(name);
 -- buys is a guarantee that a deleted entry's id is never handed out again.
 -- That is worth paying for an entry and not for a mood, so the database holds
 -- both variants side by side to compare.
+--
+-- The CHECK on `date` rejects anything date() would not hand back unchanged:
+-- 'last tuesday', '2024-1-5' and '2024-02-30' all fail it. Without it, a TEXT
+-- column stores any of them without complaint.
+--
+-- `mood_id` is nullable because picking a mood is optional, and a handful of
+-- entries have none.
 CREATE TABLE entry (
   id      INTEGER PRIMARY KEY AUTOINCREMENT,
-  date    TEXT NOT NULL,               -- 'YYYY-MM-DD'; ISO-8601 sorts chronologically
+  date    TEXT NOT NULL CHECK (date IS date(date)), -- 'YYYY-MM-DD'; sorts chronologically
   title   TEXT NOT NULL,
   content TEXT NOT NULL,
   mood_id INTEGER,
@@ -121,7 +139,10 @@ CREATE TRIGGER entry_ad AFTER DELETE ON entry BEGIN
   VALUES ('delete', OLD.id, OLD.title, OLD.content);
 END;
 
-CREATE TRIGGER entry_au AFTER UPDATE ON entry BEGIN
+-- UPDATE OF limits this to the columns the index cares about, so changing an
+-- entry's mood does not rewrite its search terms. `id` is on the list because
+-- the index is keyed by it: were an id ever changed, the terms must move too.
+CREATE TRIGGER entry_au AFTER UPDATE OF id, title, content ON entry BEGIN
   INSERT INTO entry_fts(entry_fts, rowid, title, content)
   VALUES ('delete', OLD.id, OLD.title, OLD.content);
   INSERT INTO entry_fts(rowid, title, content) VALUES (NEW.id, NEW.title, NEW.content);
@@ -133,7 +154,8 @@ END;
 
 -- `author` is nullable on purpose: some quotes are anonymous, which makes this
 -- the table to reach for when NULL comparison, IS NOT NULL and NULLS LAST need
--- a worked example.
+-- a worked example. Kierkegaard is here for his ø: NOCASE, upper() and lower()
+-- only fold ASCII letters, so 'SØREN' and 'Søren' stay different.
 CREATE TABLE quote (
   id      INTEGER PRIMARY KEY,
   content TEXT NOT NULL,
@@ -150,27 +172,46 @@ CREATE INDEX idx_quote_author_nocase ON quote(author COLLATE NOCASE);
 -- Auth
 -- ---------------------------------------------------------------------------
 
+-- One row: the journal's owner. The entries need no user_id, because there is
+-- only one person they could belong to; the table exists because a web
+-- application still needs somewhere to keep a password hash.
+--
+-- The NOCASE collation sits on the column, so the unique index inherits it and
+-- serves `WHERE username = ?` — the opposite of the quote index above, where
+-- the collation is on the index alone. It also stops 'Avery' being registered
+-- next to 'avery'.
 CREATE TABLE user (
   id           INTEGER PRIMARY KEY,
-  username     TEXT UNIQUE,
-  passwordhash TEXT,                   -- scrypt, 64-byte, hex
-  salt         TEXT,
-  role         TEXT                    -- 'user' | 'admin'
+  username     TEXT NOT NULL COLLATE NOCASE,
+  passwordhash TEXT NOT NULL,          -- scrypt, 64-byte, hex
+  salt         TEXT NOT NULL           -- 16-byte, hex
 );
+
+CREATE UNIQUE INDEX idx_user_username ON user(username);
 
 -- WITHOUT ROWID, so the table *is* the session_id B-tree: the lookup that runs
 -- on every page navigation is one descent, and no secondary index on
--- session_id is needed or wanted. Such tables use index payload limits, so the
--- whole row must stay under maxLocal (about 1002 bytes on a 4 KiB page) — one
--- reason a session id is 64 characters and not more.
+-- session_id is needed or wanted. The whole row lives in that B-tree, so it
+-- should stay small — SQLite suggests under about a twentieth of a page — or it
+-- spills onto overflow pages and the single descent stops being one read.
+--
+-- Timestamps use SQLite's own 'YYYY-MM-DD HH:MM:SS' in UTC, which is what
+-- CURRENT_TIMESTAMP and datetime('now') produce. Text comparison is only
+-- correct when both sides share one format, and the CHECKs keep it that way.
 CREATE TABLE session (
   session_id TEXT PRIMARY KEY,
   user_id    INTEGER NOT NULL,
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-  expires_at TEXT NOT NULL,            -- full ISO-8601 timestamp
-  FOREIGN KEY (user_id) REFERENCES user(id)
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+             CHECK (created_at IS datetime(created_at)),
+  expires_at TEXT NOT NULL
+             CHECK (expires_at IS datetime(expires_at)),
+  -- A session outlives nothing: deleting the user logs them out everywhere.
+  FOREIGN KEY (user_id) REFERENCES user(id) ON UPDATE CASCADE ON DELETE CASCADE
 ) WITHOUT ROWID;
 
+-- No index on user_id, despite the rule on entry(mood_id) above. With one user
+-- every row holds the same value, so an index could never narrow a search.
+--
 -- There is deliberately no index on expires_at. The prune runs on every login
 -- and is what keeps this table at a handful of rows, so a scan beats an index
 -- at every size it reaches.
@@ -184,10 +225,9 @@ INSERT INTO mood (id, name, sentiment) VALUES
   (2, 'anxious',    'negative'),
   (3, 'grateful',   'positive'),
   (4, 'happy',      'positive'),
-  (5, 'neutral',    'neutral'),
+  (5, 'calm',       'neutral'),
   (6, 'proud',      'positive'),
   (7, 'sad',        'negative'),
   (8, 'determined', 'positive');
 
 COMMIT;
-PRAGMA foreign_keys = ON;

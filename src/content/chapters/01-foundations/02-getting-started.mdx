@@ -469,8 +469,8 @@ entry_fts   entry_fts_data     entry_fts_idx       mood        session   user
 ```
 
 It models a small journalling application: one entry per day you wrote something,
-each entry classified by a single mood and any number of tags, plus a table of
-quotes and the two tables a web application needs to keep people logged in.
+each entry given at most one mood and any number of tags, plus a table of
+quotes and the two tables a web application needs to keep its owner logged in.
 
 Twelve names appear and only seven are tables you would write queries against.
 `entry_fts` is a full-text search index, and the four `entry_fts_*` names are the
@@ -483,22 +483,24 @@ The seven that matter:
 
 - **`entry`** — the journal. 219 rows, one per day written, spanning 2024 and 2025. `date` is `YYYY-MM-DD` text, which sorts chronologically for free;
   <ChapterRef id="types" /> explains why that is the right choice and what the
-  alternatives cost.
+  alternatives cost. Choosing a mood and tagging are both optional, and a few
+  entries skip them: four have no mood and one has no tags.
 - **`mood`** and **`tag`** — small lookup tables. A mood also carries a
   `sentiment` of `positive`, `neutral` or `negative`, so eight moods collapse
-  into three buckets when you want the broader picture.
+  into three buckets when you want the broader picture. One tag, `travel`, is
+  on no entry at all.
 - **`entry_tag`** — the junction table joining entries to tags, with no columns
   beyond the two keys. It is `WITHOUT ROWID`, which is a decision
   <ChapterRef id="keys-and-row-identity" /> makes the case for.
-- **`quote`** — sixteen quotes, three of them anonymous. The `NULL` authors are
+- **`quote`** — eighteen quotes, three of them anonymous. The `NULL` authors are
   deliberate, and so is the fact that some names are stored with inconsistent
   capitalisation.
-- **`user`** and **`session`** — three accounts and a dozen sessions. The
-  generator freezes its clock at `2026-01-15T09:00:00Z`, and exactly one session
-  had expired at that instant; measured against today's real clock, all twelve
-  have. Compare `expires_at` against that fixed timestamp rather than
-  `datetime('now')` if you want the book's numbers. The password hashes are
-  random hex and authenticate nothing.
+- **`user`** and **`session`** — the journal's one owner and a dozen of their
+  login sessions. The generator freezes its clock at `2026-01-15 09:00:00` UTC,
+  and four sessions had expired at that instant; measured against today's real clock, all twelve have. Compare
+  `expires_at` against that fixed timestamp rather than `datetime('now')` if
+  you want the book's numbers. The password hash is random hex and
+  authenticates nothing.
 
 `.schema` prints the definitions, and the comments in this one survived into the
 database because SQLite stores the text of a `CREATE TABLE` statement exactly as
@@ -508,7 +510,7 @@ you typed it:
 sqlite> .schema entry --indent
 CREATE TABLE entry(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  date TEXT NOT NULL, -- 'YYYY-MM-DD'; ISO-8601 sorts chronologically
+  date TEXT NOT NULL CHECK(date IS date(date)), -- 'YYYY-MM-DD'; sorts chronologically
   title TEXT NOT NULL,
   content TEXT NOT NULL,
   mood_id INTEGER,
@@ -521,6 +523,11 @@ The real output continues with the table's two indexes and the three triggers th
 keep the search index in sync, trimmed here and covered in
 
 <ChapterRef id="full-text-search" />.
+
+That `ON DELETE SET NULL`, and every other foreign key rule in the file, is
+enforced only on a connection that has run `PRAGMA foreign_keys = ON`. The
+setting is not stored in `journal.db`, which is why it belongs in the
+`.sqliterc` above.
 
 Two queries to confirm you have the right file. The most recent handful of
 entries:
@@ -550,10 +557,10 @@ sqlite> select t.name as tag, count(*) as entries
 ╭──────────────┬─────────╮
 │     tag      │ entries │
 ╞══════════════╪═════════╡
-│ relationship │      78 │
-│ coding       │      62 │
+│ relationship │      77 │
+│ coding       │      61 │
 │ exercise     │      58 │
-│ health       │      42 │
+│ health       │      41 │
 │ work         │      38 │
 │ music        │      38 │
 │ cat          │      36 │
@@ -564,7 +571,7 @@ sqlite> select t.name as tag, count(*) as entries
 ```
 
 That spread is not accidental. Real data is lopsided, and the gap between a tag
-on 78 entries and a tag on 14 is what makes an index on one of them worth having
+on 77 entries and a tag on 14 is what makes an index on one of them worth having
 and an index on the other close to useless. <ChapterRef id="choosing-indexes" />
 calls that selectivity and spends a chapter on it.
 
