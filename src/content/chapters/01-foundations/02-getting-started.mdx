@@ -223,9 +223,6 @@ that begin with a dot are intercepted by the shell program itself and never
 reach the engine. They are how you change the output format, inspect the
 schema, read files, and write results out.
 
-Three rules follow from that, and each one produces a confusing error when you
-break it.
-
 A dot command must start in the first column. A single leading space makes the
 line SQL again, and the parser rejects it:
 
@@ -302,8 +299,9 @@ sqlite> select name, country, population from city;
 ```
 
 `.headers on` turns column names on for the text modes. The columnar modes,
-`box`, `table` and `column`, print their titles regardless of that setting,
-which is why the example above has headers without asking for them.
+`box`, `table`, `column`, `markdown` and `qbox`, switch headers on for you if you
+have never set `.headers` yourself, which is why the example above has titles
+without asking for them.
 
 The modes worth knowing are `list` and `box` for reading, `json` and `csv` for
 handing data to something else, `line` for a single wide row you want to read
@@ -355,7 +353,7 @@ sqlite3 intro.db ".read schema.sql"
 `.shell` and `.system` run a command in the operating system shell without
 leaving the prompt.
 
-Getting bulk data in and out has its own commands: `.import` for CSV, `.dump`
+Getting bulk data out has its own commands: `.dump`
 for a full SQL reconstruction of the database, `.backup` for a consistent binary
 copy, and `.recover` for salvaging what is left of a damaged file. <ChapterRef id="integrity-backup-and-restore" />
 covers the last three properly,
@@ -421,8 +419,7 @@ which are stored in the file.
 
 The file is read for non-interactive runs too. A script that
 parses the output of `sqlite3 db.sqlite "select ..."` will get boxes and timing
-lines once you set those here, and break. Recent versions print a
-`-- Loading resources from ...` notice so you can see it happening. Pass
+lines once you set those here, and break. Pass
 `-noinit` to skip the file, and prefer explicit output flags in anything
 automated:
 
@@ -448,12 +445,195 @@ Editor extensions are the lightest option of the three. The SQLite and SQLite
 Viewer extensions for VS Code open a database file in a tab beside your code,
 which is enough for a quick look during development.
 
-One caution applies to all of them. A GUI holds a connection open for as long
-as the file is on screen, which leaves a `-wal` file beside the database and can
-block a process that wants to write. If a write from your application fails
+One caution applies to all of them. A GUI holds a connection open for as long as
+the file is on screen, which leaves a `-wal` file beside the database in WAL mode.
+An open connection that is only reading does not block a writer there, but several
+of these tools keep a write transaction open between edits, DB Browser until you
+click "Write Changes", and that does block. If a write from your application fails
 while a browser window is open on the same file, close the window first and
 consider the question answered. <ChapterRef id="transactions-and-concurrency" />
 explains the locking underneath.
+
+## The book's running dataset
+
+Almost every query in this book runs against one database, so that you can type
+any example straight into the shell and get the same rows back. It is called
+`journal.db`, it is about 200 KB, and it accompanies the book as a single file.
+Put it wherever you keep scratch work and open it:
+
+```console
+$ sqlite3 journal.db
+sqlite> .tables
+entry       entry_fts_config   entry_fts_docsize   entry_tag   quote     tag
+entry_fts   entry_fts_data     entry_fts_idx       mood        session   user
+```
+
+It models a small journalling application: one entry per day you wrote something,
+each entry classified by a single mood and any number of tags, plus a table of
+quotes and the two tables a web application needs to keep people logged in.
+
+Twelve names appear and only seven are tables you would write queries against.
+`entry_fts` is a full-text search index, and the four `entry_fts_*` names are the
+shadow tables it keeps its own data in. They belong to SQLite, not to you, and
+
+<ChapterRef id="full-text-search" /> is where they stop being clutter and start
+being the point.
+
+The seven that matter:
+
+- **`entry`** — the journal. 219 rows, one per day written, spanning 2024 and 2025. `date` is `YYYY-MM-DD` text, which sorts chronologically for free;
+  <ChapterRef id="types" /> explains why that is the right choice and what the
+  alternatives cost.
+- **`mood`** and **`tag`** — small lookup tables. A mood also carries a
+  `sentiment` of `positive`, `neutral` or `negative`, so eight moods collapse
+  into three buckets when you want the broader picture.
+- **`entry_tag`** — the junction table joining entries to tags, with no columns
+  beyond the two keys. It is `WITHOUT ROWID`, which is a decision
+  <ChapterRef id="keys-and-row-identity" /> makes the case for.
+- **`quote`** — sixteen quotes, three of them anonymous. The `NULL` authors are
+  deliberate, and so is the fact that some names are stored with inconsistent
+  capitalisation.
+- **`user`** and **`session`** — three accounts and a dozen sessions. The
+  generator freezes its clock at `2026-01-15T09:00:00Z`, and exactly one session
+  had expired at that instant; measured against today's real clock, all twelve
+  have. Compare `expires_at` against that fixed timestamp rather than
+  `datetime('now')` if you want the book's numbers. The password hashes are
+  random hex and authenticate nothing.
+
+`.schema` prints the definitions, and the comments in this one survived into the
+database because SQLite stores the text of a `CREATE TABLE` statement exactly as
+you typed it:
+
+```console
+sqlite> .schema entry --indent
+CREATE TABLE entry(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  date TEXT NOT NULL, -- 'YYYY-MM-DD'; ISO-8601 sorts chronologically
+  title TEXT NOT NULL,
+  content TEXT NOT NULL,
+  mood_id INTEGER,
+  -- SET NULL, not CASCADE: retiring a mood must never destroy journal entries.
+  FOREIGN KEY(mood_id) REFERENCES mood(id) ON UPDATE CASCADE ON DELETE SET NULL
+);
+```
+
+The real output continues with the table's two indexes and the three triggers that
+keep the search index in sync, trimmed here and covered in
+
+<ChapterRef id="full-text-search" />.
+
+Two queries to confirm you have the right file. The most recent handful of
+entries:
+
+```console
+sqlite> select date, title,
+   ...>   (select name from mood where id = e.mood_id) as mood
+   ...> from entry e order by date desc limit 5;
+╭────────────┬──────────────┬──────────╮
+│    date    │    title     │   mood   │
+╞════════════╪══════════════╪══════════╡
+│ 2025-12-31 │ Long talk    │ anxious  │
+│ 2025-12-23 │ Barre chords │ grateful │
+│ 2025-12-11 │ New herbs    │ grateful │
+│ 2025-12-09 │ She noticed  │ happy    │
+│ 2025-12-08 │ Morning swim │ happy    │
+╰────────────┴──────────────┴──────────╯
+```
+
+And how often each tag is used, which is worth looking at now because the shape
+of it matters much later:
+
+```console
+sqlite> select t.name as tag, count(*) as entries
+   ...> from entry_tag et join tag t on t.id = et.tag_id
+   ...> group by t.id order by entries desc;
+╭──────────────┬─────────╮
+│     tag      │ entries │
+╞══════════════╪═════════╡
+│ relationship │      78 │
+│ coding       │      62 │
+│ exercise     │      58 │
+│ health       │      42 │
+│ work         │      38 │
+│ music        │      38 │
+│ cat          │      36 │
+│ sports       │      19 │
+│ social       │      15 │
+│ gardening    │      14 │
+╰──────────────┴─────────╯
+```
+
+That spread is not accidental. Real data is lopsided, and the gap between a tag
+on 78 entries and a tag on 14 is what makes an index on one of them worth having
+and an index on the other close to useless. <ChapterRef id="choosing-indexes" />
+calls that selectivity and spends a chapter on it.
+
+The search index is already populated and already maintained, so you can try it
+without setting anything up. The `*` is a prefix match, so this finds `deploy`,
+`deployed` and `deployment` at once:
+
+```console
+sqlite> select e.date, e.title from entry_fts f
+   ...> join entry e on e.id = f.rowid
+   ...> where entry_fts match 'deploy*' order by rank limit 5;
+╭────────────┬──────────────────────────╮
+│    date    │          title           │
+╞════════════╪══════════════════════════╡
+│ 2025-07-25 │ Pipeline red             │
+│ 2024-07-21 │ Migration finally landed │
+│ 2025-05-16 │ Pipeline red             │
+│ 2024-08-16 │ Migration finally landed │
+│ 2025-10-05 │ Wedding                  │
+╰────────────┴──────────────────────────╯
+```
+
+### The content is generated
+
+The entries are invented. A script builds them from pools of sentences, with a
+fixed random seed, a fixed date range, and no value read from the clock, so the
+database is identical on every machine and every run. That is the only reason
+this book can print a result and expect it to still be true on your copy.
+
+It also means the writing is synthetic, and occasionally reads like it. Nobody's
+private journal is in here, and the credentials are not credentials.
+
+### Why it is small, and what comes after it
+
+219 entries is a deliberate size. It is large enough that a `group by` has
+something to group and a join has something to get wrong, and small enough that
+you can read the whole table and check an answer by eye. For Parts II and III,
+where the question is always whether a query is _correct_, that is exactly what
+you want.
+
+It is useless for performance work, and you should be suspicious of any book
+that pretends otherwise. A database this size fits in memory several times over.
+Every query is fast, including the badly written ones, and an index makes no
+measurable difference because there is nothing to skip. Part IV therefore
+switches to a second, much larger dataset, introduced when it is needed;
+
+<ChapterRef id="choosing-indexes" /> is where the numbers start to mean
+something.
+
+### Rebuilding it
+
+You never need to, but if you overwrite the file while experimenting, the
+generator is beside it:
+
+```bash
+node seed.mjs
+```
+
+It needs Node 22.13 or later, because it uses the built-in `node:sqlite` module
+rather than a driver from npm, and 22.13 is the release where that module stopped
+requiring the `--experimental-sqlite` flag — a choice
+
+<ChapterRef id="ecosystem-map" /> comes back to. `schema.sql` beside it builds
+an empty copy with no rows at all, which is the version to reach for when a
+chapter asks you to insert your own data:
+
+```bash
+sqlite3 fresh.db < schema.sql
+```
 
 ## Takeaways
 
@@ -479,6 +659,14 @@ explains the locking underneath.
 
 - **A GUI keeps a connection open.** An open browser window on a database leaves
   a `-wal` beside it and can block your application's writes.
+
+- **`journal.db` is the book's dataset, and it is small on purpose.** 219 entries
+  is enough to get a join wrong and few enough to check an answer by hand. It
+  proves nothing about performance, which is why Part IV brings a bigger one.
+
+- **The `entry_fts_*` tables are not yours.** A full-text index keeps its data in
+  shadow tables that show up in `.tables`. Do not query them directly and never
+  write to them.
 
 - **Under WSL, keep the database out of `/mnt/c`.** A Windows process and a Linux
   process do not honour each other's locks on a file there. A write from the
