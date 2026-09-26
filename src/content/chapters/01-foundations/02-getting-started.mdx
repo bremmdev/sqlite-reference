@@ -472,12 +472,10 @@ It models a small journalling application: one entry per day you wrote something
 each entry given at most one mood and any number of tags, plus a table of
 quotes and the two tables a web application needs to keep its owner logged in.
 
-Twelve names appear and only seven are tables you would write queries against.
-`entry_fts` is a full-text search index, and the four `entry_fts_*` names are the
-shadow tables it keeps its own data in. They belong to SQLite, not to you, and
-
-<ChapterRef id="full-text-search" /> is where they stop being clutter and start
-being the point.
+That's twelve names, but only seven of them are tables you'll actually query.
+`entry_fts` is a full-text search index, and the four `entry_fts_*` tables are
+where it stashes its own data. SQLite looks after those, so you can ignore them
+for now. We will revisit them in <ChapterRef id="full-text-search" />.
 
 The seven that matter:
 
@@ -518,11 +516,6 @@ CREATE TABLE entry(
   FOREIGN KEY(mood_id) REFERENCES mood(id) ON UPDATE CASCADE ON DELETE SET NULL
 );
 ```
-
-The real output continues with the table's two indexes and the three triggers that
-keep the search index in sync, trimmed here and covered in
-
-<ChapterRef id="full-text-search" />.
 
 That `ON DELETE SET NULL`, and every other foreign key rule in the file, is
 enforced only on a connection that has run `PRAGMA foreign_keys = ON`. The
@@ -601,26 +594,6 @@ fixed random seed, a fixed date range, and no value read from the clock, so the
 database is identical on every machine and every run. That is the only reason
 this book can print a result and expect it to still be true on your copy.
 
-It also means the writing is synthetic, and occasionally reads like it. Nobody's
-private journal is in here, and the credentials are not credentials.
-
-### Why it is small, and what comes after it
-
-219 entries is a deliberate size. It is large enough that a `group by` has
-something to group and a join has something to get wrong, and small enough that
-you can read the whole table and check an answer by eye. For Parts II and III,
-where the question is always whether a query is _correct_, that is exactly what
-you want.
-
-It is useless for performance work, and you should be suspicious of any book
-that pretends otherwise. A database this size fits in memory several times over.
-Every query is fast, including the badly written ones, and an index makes no
-measurable difference because there is nothing to skip. Part IV therefore
-switches to a second, much larger dataset, introduced when it is needed;
-
-<ChapterRef id="choosing-indexes" /> is where the numbers start to mean
-something.
-
 ### Rebuilding it
 
 You never need to, but if you overwrite the file while experimenting, the
@@ -632,10 +605,9 @@ node seed.mjs
 
 It needs Node 22.13 or later, because it uses the built-in `node:sqlite` module
 rather than a driver from npm, and 22.13 is the release where that module stopped
-requiring the `--experimental-sqlite` flag — a choice
+requiring the `--experimental-sqlite` flag.
 
-<ChapterRef id="ecosystem-map" /> comes back to. `schema.sql` beside it builds
-an empty copy with no rows at all, which is the version to reach for when a
+`schema.sql` beside it builds an empty copy with no rows at all, which is the version to reach for when a
 chapter asks you to insert your own data:
 
 ```bash
@@ -666,14 +638,6 @@ sqlite3 fresh.db < schema.sql
 
 - **A GUI keeps a connection open.** An open browser window on a database leaves
   a `-wal` beside it and can block your application's writes.
-
-- **`journal.db` is the book's dataset, and it is small on purpose.** 219 entries
-  is enough to get a join wrong and few enough to check an answer by hand. It
-  proves nothing about performance, which is why Part IV brings a bigger one.
-
-- **The `entry_fts_*` tables are not yours.** A full-text index keeps its data in
-  shadow tables that show up in `.tables`. Do not query them directly and never
-  write to them.
 
 - **Under WSL, keep the database out of `/mnt/c`.** A Windows process and a Linux
   process do not honour each other's locks on a file there. A write from the

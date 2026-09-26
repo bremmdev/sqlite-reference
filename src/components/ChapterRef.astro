@@ -28,11 +28,11 @@ const label = chapter?.partSlug === "appendices" ? "Appendix" : "Chapter";
 {
   chapter ? (
     <a href={chapter.href}>
-      {label} {chapter.number}
+      <span class="whitespace-nowrap">{label} {chapter.number}</span>
       {withTitle && <>, {chapter.entry.data.title}</>}
     </a>
   ) : (
-    <span class="text-slate-400" title="This chapter is not written yet">
+    <span class="whitespace-nowrap text-slate-400" title="This chapter is not written yet">
       Chapter &ldquo;{id}&rdquo;
     </span>
   )
