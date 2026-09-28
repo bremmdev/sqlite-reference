@@ -1,0 +1,1023 @@
+---
+title: SQL crash course
+description: The SQL every later chapter assumes, at speed. Reading, filtering and sorting rows, NULL, pattern matching, CASE, creating tables with constraints, and writing data back, all run against the journal database.
+sketches: ["022", "037"]
+---
+
+import ChapterRef from "@components/ChapterRef.astro";
+
+## Following along
+
+This chapter covers the SQL that the rest of the book takes for granted at a fast pace.
+I assume you have written a `SELECT` before and know what a
+`WHERE` clause is for, so it movies quite fast through these concepts. It slows
+down in two kinds of places: where SQLite behaves differently from other SQL databases,
+and where an ordinary-looking query returns a wrong answer without an error.
+Joins, aggregates and subqueries appear only where an example cannot do without them,
+and each gets a chapter of its own in Part III.
+
+Every example runs against `journal.db` from <ChapterRef id="getting-started" />.
+Open it read-only. The first two thirds of the chapter only read, and
+`-readonly` guarantees that a stray statement cannot change the rows the book's
+results depend on. The sections that write make a copy first.
+
+```console
+$ sqlite3 -readonly journal.db
+sqlite> .nullvalue NULL
+```
+
+`.nullvalue` sets the text the shell prints for a `NULL`. The default is
+nothing at all, which makes a `NULL` look exactly like an empty string.
+You can add the line to your `.sqliterc`.
+
+## Strings, names and comments
+
+First a few rules, because these can silently change what a query means.
+
+In SQLite, keywords and names are case-insensitive. `SELECT Name FROM Mood` and
+`select name from mood` are the same statement. Names are where other engines
+part ways: PostgreSQL treats a quoted name as case-sensitive, and MySQL's table
+names are case-sensitive on most Unix systems. Values are a different matter:
+`'Seneca'` and `'seneca'` are two different strings.
+
+Strings go in single quotes. To put a single quote inside one, double it, as in
+`'Don''t'`. SQLite has no backslash escapes, so `'\n'` is two characters, a
+backslash and an `n`. SQLite's `char(10)` is the newline when you need one.
+
+Double quotes are for names. You need them when a table or column name collides
+with a keyword or contains a space, as in `"order"` or `"first name"`. SQLite
+also accepts `[order]` and `` `order` `` so that SQL written for SQL Server and
+MySQL runs unchanged, but double quotes are the standard and the only ones worth
+typing in SQLite.
+
+### The double-quoted string trap
+
+The SQL standard says a double-quoted word is a name. For most of its history
+SQLite bent that rule: when a double-quoted word matched no column, it quietly
+treated the word as a string instead. The SQLite documentation calls this a
+misfeature, and the shell has refused it since version 3.41.0:
+
+```console
+sqlite> select name from mood where sentiment = "positive";
+Parse error near line 1: no such column: "positive" - should this be a string literal in single-quotes?
+  select name from mood where sentiment = "positive";
+                            error here ---^
+```
+
+That is the shell, though. The library's own default still accepts double-quoted
+strings, for backwards compatibility, so what your application does depends on
+how the copy of SQLite inside its driver was compiled. `node:sqlite` rejects the
+statement above with the same message. Python's built-in `sqlite3` module runs it
+just fine.
+
+The other half of the trap has no switch. When the double-quoted word does
+match a column, it is a column, in every SQLite build:
+
+```console
+sqlite> select count(*) from mood where name = "name";
+╭──────────╮
+│ count(*) │
+╞══════════╡
+│        8 │
+╰──────────╯
+```
+
+The query reads as "find the mood called name" and runs as "find every mood
+whose name equals its own name", which is all eight of them, with no error and
+no warning. The rule that avoids both halves is short: single quotes for values,
+double quotes for names, and never the other way round.
+
+### Comments
+
+`--` starts a comment that runs to the end of the line, and `/* ... */` can go
+across lines. Comments inside a `CREATE` statement are stored with it exactly as is.
+
+## Reading rows
+
+A first query, for the three most recent entries written on a grateful day:
+
+```console
+sqlite> select date, title
+   ...> from entry
+   ...> where mood_id = 3          -- grateful
+   ...> order by date desc
+   ...> limit 3;
+╭────────────┬────────────────╮
+│    date    │     title      │
+╞════════════╪════════════════╡
+│ 2025-12-23 │ Barre chords   │
+│ 2025-12-11 │ New herbs      │
+│ 2025-12-07 │ Six games left │
+╰────────────┴────────────────╯
+```
+
+`FROM` picks the table, `WHERE` filters rows, the select list computes the
+output columns, `DISTINCT` removes duplicates, `ORDER BY` sorts, and `LIMIT`
+takes the first few. `GROUP BY` and `HAVING` slot in after `WHERE`, and belong
+to <ChapterRef id="aggregates" />. Much of what follows falls out of that order:
+`WHERE` runs before the select list exists, `ORDER BY` runs after it, and
+`LIMIT` counts rows only once they are sorted.
+
+### The select list
+
+Each item in the select list is an expression, not just a column name. It can be
+a function call, a literal, or a `CASE`. You can use `as` to name the result, and
+`ORDER BY` can use the name:
+
+```console
+sqlite> select date, title, length(content) as chars
+   ...> from entry
+   ...> order by chars desc
+   ...> limit 3;
+╭────────────┬────────────────┬───────╮
+│    date    │     title      │ chars │
+╞════════════╪════════════════╪═══════╡
+│ 2024-11-19 │ New record     │   382 │
+│ 2024-11-25 │ Late equaliser │   352 │
+│ 2025-10-05 │ Wedding        │   346 │
+╰────────────┴────────────────┴───────╯
+```
+
+SQLite also lets `WHERE` use `chars`, which the order above says should be
+impossible and which most other engines reject. It is a convenience that does
+not port, so repeat the expression in `WHERE` if the SQL may ever run anywhere
+else.
+
+In SQLite, `||` joins strings, as the SQL standard specifies, while `+` is
+arithmetic only: it converts both sides to numbers first, and a word converts to
+zero:
+
+```console
+sqlite> select 'Barre' || ' ' || 'chords' as joined, 'Barre' + 'chords' as added;
+╭──────────────┬───────╮
+│    joined    │ added │
+╞══════════════╪═══════╡
+│ Barre chords │     0 │
+╰──────────────┴───────╯
+```
+
+### Filtering
+
+`WHERE` keeps the rows for which its condition is true. The comparison operators
+are the usual `=` or `==` for equality, `<>` or `!=` for inequality and there are also `<`, `<=`, `>` and `>=`. `IN` tests against a list, `BETWEEN` against an inclusive
+range, and `AND`, `OR` and `NOT` combine conditions.
+
+Dates in the journal are `YYYY-MM-DD` text, and text in that shape sorts
+chronologically, so string comparison is date comparison: `date >= '2025-06-01'`
+means June 2025 onwards. <ChapterRef id="types" /> explains why that storage
+choice is a good one and what the alternatives cost.
+
+The same property hides a common range bug. `BETWEEN` includes both ends, but a
+timestamp is longer than a date, and a string that extends another sorts after
+it, so `'2026-01-31 07:22:55'` comes after `'2026-01-31'`. One of the journal's
+login sessions expires at exactly that moment, and `BETWEEN` misses it:
+
+```console
+sqlite> select count(*) from session
+   ...> where expires_at between '2026-01-01' and '2026-01-31';
+╭──────────╮
+│ count(*) │
+╞══════════╡
+│        8 │
+╰──────────╯
+sqlite> select count(*) from session
+   ...> where expires_at >= '2026-01-01' and expires_at < '2026-02-01';
+╭──────────╮
+│ count(*) │
+╞══════════╡
+│        9 │
+╰──────────╯
+```
+
+A half-open range, inclusive at the start and exclusive at the end, is correct
+for dates and timestamps alike. It is the habit worth adopting.
+
+`AND` binds more tightly than `OR`, which can turn a sensible-looking filter
+into a different question. Here is an attempt at the frustrated or anxious
+entries from 2025:
+
+```console
+sqlite> select count(*) from entry
+   ...> where mood_id = 1 or mood_id = 2 and date >= '2025-01-01';
+╭──────────╮
+│ count(*) │
+╞══════════╡
+│       40 │
+╰──────────╯
+sqlite> select count(*) from entry
+   ...> where mood_id in (1, 2) and date >= '2025-01-01';    -- frustrated, anxious
+╭──────────╮
+│ count(*) │
+╞══════════╡
+│       27 │
+╰──────────╯
+```
+
+The first is read as `mood_id = 1 or (mood_id = 2 and date >= '2025-01-01')`,
+which counts every frustrated entry from all years. Parentheses fix it, and `IN`
+avoids the question.
+
+### Sorting
+
+`ORDER BY` takes one or more expressions, each ascending unless followed by
+`desc`, and each later key only breaks ties in the keys before it. You can sort
+by a column you did not select, by a name from the select list, or by any
+expression, which the section on `CASE` below puts to work.
+
+Without `ORDER BY`, a query has no order. Rows come back in whatever order the
+engine found them, which depends on the query plan, and the plan can change when
+an index is added, when the data grows, or when SQLite is upgraded. The journal
+makes this easy to miss, because its entries were inserted in date order and a
+plain scan returns them that way:
+
+```console
+sqlite> select id, date, title from entry limit 3;
+╭────┬────────────┬────────────────╮
+│ id │    date    │     title      │
+╞════╪════════════╪════════════════╡
+│  1 │ 2024-01-04 │ Deadline moved │
+│  2 │ 2024-01-06 │ Compost        │
+│  3 │ 2024-01-08 │ Chasing a bug  │
+╰────┴────────────┴────────────────╯
+```
+
+### LIMIT and OFFSET
+
+`LIMIT` stops after a number of rows, and `OFFSET` skips a number first.
+Together they page through a result:
+
+```console
+sqlite> select date, title from entry
+   ...> order by date desc
+   ...> limit 5 offset 5;          -- page 2, five per page
+╭────────────┬─────────────────────╮
+│    date    │        title        │
+╞════════════╪═════════════════════╡
+│ 2025-12-07 │ Six games left      │
+│ 2025-12-06 │ Feeling better      │
+│ 2025-12-05 │ Dentist             │
+│ 2025-12-02 │ New scratching post │
+│ 2025-12-01 │ How are you         │
+╰────────────┴─────────────────────╯
+```
+
+SQLite also accepts `limit 5, 10`, a form borrowed from MySQL in
+which the first number is the offset. `OFFSET` is not
+free: to skip 500 rows the engine produces 500 rows and throws them away, so the
+last page of a long list is the slowest one to fetch.
+
+<ChapterRef id="row-values" /> covers keyset pagination, which avoids that cost.
+
+`LIMIT` and `OFFSET` are not in the SQL standard, although PostgreSQL and MySQL
+share them.
+
+### DISTINCT
+
+`DISTINCT` removes duplicate rows from the result:
+
+```console
+sqlite> select distinct sentiment from mood order by sentiment;
+╭───────────╮
+│ sentiment │
+╞═══════════╡
+│ negative  │
+│ neutral   │
+│ positive  │
+╰───────────╯
+```
+
+It compares whole rows, not the first column. `select distinct sentiment, name`
+returns all eight moods, because no two moods share both values. When you want
+one row per value with something computed across each group, such as how many
+moods fall under each sentiment, you use `GROUP BY`.
+
+## NULL
+
+`NULL` marks a value that is missing or unknown. The journal has two kinds on
+purpose: four entries with no mood, and three quotes with no author.
+
+A comparison involving `NULL` is neither true nor false but `NULL` itself,
+and so is arithmetic or concatenation with one:
+
+```console
+sqlite> select null = null, 1 <> null, 1 + null, 'by ' || null;
+╭─────────────┬───────────┬──────────┬───────────────╮
+│ null = null │ 1 <> null │ 1 + null │ 'by ' || null │
+╞═════════════╪═══════════╪══════════╪═══════════════╡
+│ NULL        │ NULL      │ NULL     │ NULL          │
+╰─────────────┴───────────┴──────────┴───────────────╯
+```
+
+`WHERE` keeps only the rows whose condition is true, so a row where the
+condition is `NULL` is dropped exactly like a row where it is false. `= null`
+therefore matches nothing, ever. The test for a missing value is `IS NULL`:
+
+```console
+sqlite> select count(*) from entry where mood_id = null;
+╭──────────╮
+│ count(*) │
+╞══════════╡
+│        0 │
+╰──────────╯
+sqlite> select count(*) from entry where mood_id is null;
+╭──────────╮
+│ count(*) │
+╞══════════╡
+│        4 │
+╰──────────╯
+```
+
+The version of this bug that survives code review is a negative condition.
+Here is every entry that was not written on a grateful day:
+
+```console
+sqlite> select count(*) from entry where mood_id <> 3;       -- grateful
+╭──────────╮
+│ count(*) │
+╞══════════╡
+│      184 │
+╰──────────╯
+```
+
+There are 219 entries and 31 grateful ones, so the answer should be 188. The
+four entries with no mood are missing. They are not grateful entries, so the
+question meant to include them, but `NULL <> 3` is `NULL` rather than true, and
+`WHERE` drops them.
+
+SQLite's `IS` and `IS NOT` accept any value on either side, not only `NULL`.
+They compare like `=` and `<>`, except that `NULL` is treated as an ordinary
+value, equal to itself and to nothing else:
+
+```console
+sqlite> select count(*) from entry where mood_id is not 3;
+╭──────────╮
+│ count(*) │
+╞══════════╡
+│      188 │
+╰──────────╯
+```
+
+Standard SQL spells the same operators `IS NOT DISTINCT FROM` and
+`IS DISTINCT FROM`, and SQLite has accepted those spellings too since 3.39.0.
+PostgreSQL has the standard spellings them, but `is not 3` works in SQLite alone.
+MySQL has neither, and writes `not (mood_id <=> 3)` instead. Which spelling you
+use matters less than stopping, every time you write `<>` against a column that
+can hold `NULL`, to decide what should happen to those rows.
+
+`NOT IN` has a sharper edge. If its list contains a `NULL`, it matches nothing at
+all: `where author not in ('Seneca', null)` returns no quotes, because comparing
+any author with that `NULL` is unknown.
+
+When a `NULL` is headed for display rather than a comparison, `coalesce()`
+supplies a fallback. It returns the first of its arguments that is not `NULL`:
+
+```console
+sqlite> select id, 'by ' || author as byline, coalesce(author, 'Anonymous') as credit
+   ...> from quote
+   ...> where id between 7 and 10;
+╭────┬────────────────────────┬─────────────────────╮
+│ id │         byline         │       credit        │
+╞════╪════════════════════════╪═════════════════════╡
+│  7 │ by Heraclitus          │ Heraclitus          │
+│  8 │ NULL                   │ Anonymous           │
+│  9 │ NULL                   │ Anonymous           │
+│ 10 │ by Friedrich Nietzsche │ Friedrich Nietzsche │
+╰────┴────────────────────────┴─────────────────────╯
+```
+
+Three more rules complete the picture, and each is covered where it matters:
+
+- **Aggregates skip `NULL`.** `count(*)` counts 219 entries and `count(mood_id)`
+  counts 215.
+- **`DISTINCT` and `GROUP BY` put every `NULL` in one group,** even though
+  `NULL = NULL` is not true.
+- **`UNIQUE` treats every `NULL` as different,** so a nullable unique column
+  accepts any number of them. The section on creating tables below comes back
+  to this.
+
+### Sorting NULLs
+
+SQLite sorts `NULL` before every other value, so it comes first in ascending
+order and last in descending order. MySQL and SQL Server do the same, while
+PostgreSQL does the opposite and treats `NULL` as larger than every other value.
+
+`NULLS FIRST` and `NULLS LAST` override the default for one sort key. In SQLite
+they belong to queries only: `CREATE INDEX` rejects them, and oes not need them,
+because an ordinary index on the column serves either placement.
+
+In SQLite, the anonymous quotes would head an ascending list of authors.
+`nulls last` sends them to the end:
+
+```console
+sqlite> select distinct author from quote order by author nulls last;
+╭─────────────────────╮
+│       author        │
+╞═════════════════════╡
+│ Epictetus           │
+│ Friedrich Nietzsche │
+│ Heraclitus          │
+│ MARCUS AURELIUS     │
+│ Marcus Aurelius     │
+│ Seneca              │
+│ Socrates            │
+│ SØREN KIERKEGAARD   │
+│ Søren Kierkegaard   │
+│ marcus aurelius     │
+│ seneca              │
+│ NULL                │
+╰─────────────────────╯
+```
+
+Two details in that result are worth a second look. `DISTINCT` collapsed the
+three anonymous quotes into a single `NULL` row. And the list is not in the
+order a person would call alphabetical: `MARCUS AURELIUS` comes before
+`Marcus Aurelius`, and `marcus aurelius` and `seneca` have ended up after
+`Søren Kierkegaard`. The reason is the subject of the next section.
+
+## Matching text
+
+Text in SQLite compares by its bytes unless you say otherwise. Every uppercase
+ASCII letter sorts before every lowercase one, which is why the lowercase names
+landed at the bottom of the list above, and `=` treats a difference in case as a
+difference:
+
+```console
+sqlite> select id, author from quote where author = 'Marcus Aurelius';
+╭────┬─────────────────╮
+│ id │     author      │
+╞════╪═════════════════╡
+│  2 │ Marcus Aurelius │
+│ 12 │ Marcus Aurelius │
+╰────┴─────────────────╯
+```
+
+Adding `collate nocase` to a comparison or a sort key makes it ignore the case of
+ASCII letters, so `order by author collate nocase` would have kept the four
+Marcus Aureliuses together. The `quote` table even has an index built that way,
+and <ChapterRef id="reading-and-fixing-query-plans" /> shows how a mismatch
+between the collation a query uses and the one an index was built with makes the
+index useless.
+
+### LIKE
+
+`LIKE` matches a pattern in which `%` stands for any run of characters,
+including none, and `_` for exactly one. `'back%'` means "starts with back",
+`'%back%'` means "contains back", and `'_at'` matches `cat` and `hat` but not
+`chat`. Unlike `=`, `LIKE` ignores case:
+
+```console
+sqlite> select id, author from quote where author like 'marcus aurelius';
+╭────┬─────────────────╮
+│ id │     author      │
+╞════╪═════════════════╡
+│  2 │ Marcus Aurelius │
+│  3 │ marcus aurelius │
+│ 12 │ Marcus Aurelius │
+│ 13 │ MARCUS AURELIUS │
+╰────┴─────────────────╯
+```
+
+It ignores case only for the 26 letters of ASCII, though. Every other letter,
+whether `é`, `ü` or `ø`, has to match exactly:
+
+```console
+sqlite> select id, author from quote where author like 'søren%';
+╭────┬───────────────────╮
+│ id │      author       │
+╞════╪═══════════════════╡
+│ 17 │ Søren Kierkegaard │
+╰────┴───────────────────╯
+```
+
+`SØREN KIERKEGAARD` is not found, because as far as `LIKE` is concerned `ø` and
+`Ø` are unrelated characters. `collate nocase`, `upper()` and `lower()` share the
+limit, so `upper('søren')` returns `SøREN`. Case-insensitive matching across all
+of Unicode takes the ICU extension, covered in <ChapterRef id="extensions" />.
+
+Case handling also differs between engines, so a `LIKE` rarely ports as it
+stands. PostgreSQL's `LIKE` is case-sensitive and has a separate `ILIKE`, so
+there `like 'marcus aurelius'` finds only the lowercase row.
+
+The wildcards need escaping when you mean them literally. No title in the
+journal contains an underscore, and yet:
+
+```console
+sqlite> select count(*) from entry where title like '%_%';
+╭──────────╮
+│ count(*) │
+╞══════════╡
+│      219 │
+╰──────────╯
+```
+
+`_` is a wildcard, so the pattern asks for titles with at least one character.
+`ESCAPE` names a character that makes the one after it literal:
+
+```console
+sqlite> select count(*) from entry where title like '%\_%' escape '\';
+╭──────────╮
+│ count(*) │
+╞══════════╡
+│        0 │
+╰──────────╯
+```
+
+This matters most when part of the pattern comes from a user. A search box that
+builds `'%' || input || '%'` treats any `%` or `_` the user types as a wildcard.
+Binding the input as a parameter, which is what stops SQL injection, does not
+change that, because the value is still used as a pattern. There are two fixes.
+The general one is to escape the input before building the pattern, replacing
+`\` with `\\` first and then `%` with `\%` and `_` with `\_`. The simpler one,
+whenever the input has a known alphabet, such as tag names made only of
+lowercase letters, is to drop every character outside that alphabet, which
+leaves nothing to escape. <ChapterRef id="prepared-statements" /> covers
+parameters.
+
+That recipe relies on `escape '\'`, because in SQLite `LIKE` has no escape
+character until you name one. PostgreSQL and MySQL both treat the backslash as
+the escape character by default, so the clause is optional there. In MySQL it
+is worse than optional: MySQL reads a backslash inside any string as an escape,
+so `'\'` never ends and the statement is a syntax error.
+
+### GLOB
+
+`GLOB` is `LIKE` with Unix filename wildcards and no case folding at all. `*`
+stands for any run of characters, `?` for exactly one, and square brackets match
+one character from a set, as in `[aeiou]`, `[a-z]`, or `[^a-z]` for anything
+outside the range:
+
+```console
+sqlite> select id, author from quote where author glob 'M*';
+╭────┬─────────────────╮
+│ id │     author      │
+╞════╪═════════════════╡
+│  2 │ Marcus Aurelius │
+│ 12 │ Marcus Aurelius │
+│ 13 │ MARCUS AURELIUS │
+╰────┴─────────────────╯
+```
+
+Ranges are ASCII too, so `[a-z]` does not contain `ø`. That is the same limit
+as before, and it cuts the other way here: `SøREN KIERKEGAARD`, which is what
+`upper()` makes of the correctly spelled name, has no letter in `[a-z]` and
+would be reported as typed in capitals.
+
+### Beyond LIKE and GLOB
+
+`REGEXP` is part of SQLite's grammar, but the library ships no implementation of
+it. The shell supplies one, so `select 'abc' regexp 'b';` works at the prompt,
+while the same statement in an application fails with
+`no such function: regexp` unless the driver or an extension provides the
+function.
+
+Neither `LIKE` nor `GLOB` is a search engine, either. `like '%back%'` has to
+examine every row, because an index is ordered by the start of a value and a
+leading wildcard gives it nowhere to start. A prefix pattern such as `'back%'`
+can use an index, under conditions <ChapterRef id="choosing-indexes" /> spells
+out. To find words anywhere use the full-text
+index you tried in <ChapterRef id="getting-started" />, <ChapterRef id="full-text-search" /> covers properly.
+
+## CASE expressions
+
+`CASE` is an expression that evaluates to a single value, so it
+can go anywhere a value can: in the select list, in `WHERE`, in `ORDER BY`, or
+as an argument to a function. The general form tests conditions in order and
+returns the value for the first one that is true:
+
+```console
+sqlite> select date, title, length(content) as chars,
+   ...>   case
+   ...>     when length(content) < 150 then 'short'
+   ...>     when length(content) < 250 then 'medium'
+   ...>     else 'long'
+   ...>   end as size
+   ...> from entry
+   ...> where date >= '2025-12-01'
+   ...> order by date
+   ...> limit 5;
+╭────────────┬─────────────────────┬───────┬────────╮
+│    date    │        title        │ chars │  size  │
+╞════════════╪═════════════════════╪═══════╪════════╡
+│ 2025-12-01 │ How are you         │   172 │ medium │
+│ 2025-12-02 │ New scratching post │   253 │ long   │
+│ 2025-12-05 │ Dentist             │   191 │ medium │
+│ 2025-12-06 │ Feeling better      │   161 │ medium │
+│ 2025-12-07 │ Six games left      │   147 │ short  │
+╰────────────┴─────────────────────┴───────┴────────╯
+```
+
+Because the first true condition wins and the rest are never tested, the second
+`WHEN` does not need to say `length(content) >= 150`. Put the conditions in the
+order you want them tried, and know that a row matching none of them gets
+`NULL` when there is no `ELSE`.
+
+The short form compares one expression against a list of values:
+
+```sql
+case sentiment when 'positive' then 1 when 'neutral' then 2 else 3 end
+```
+
+It compares with `=`, so a `NULL` never matches any `WHEN`, not even
+`WHEN NULL`. For a value that can be missing, use the general form and `IS NULL`:
+
+```console
+sqlite> select id, mood_id,
+   ...>   case mood_id when null then 'none' else 'set' end as short_form,
+   ...>   case when mood_id is null then 'none' else 'set' end as general_form
+   ...> from entry
+   ...> where id between 26 and 28;
+╭────┬─────────┬────────────┬──────────────╮
+│ id │ mood_id │ short_form │ general_form │
+╞════╪═════════╪════════════╪══════════════╡
+│ 26 │       8 │ set        │ set          │
+│ 27 │ NULL    │ set        │ none         │
+│ 28 │       1 │ set        │ set          │
+╰────┴─────────┴────────────┴──────────────╯
+```
+
+SQLite's `iif(condition, a, b)` is a shorthand for a `CASE` with one `WHEN` and
+an `ELSE`, and sits with the other functions in <ChapterRef id="built-in-functions" />. MySQL spells it `IF()` and PostgreSQL
+has no equivalent, so `CASE` is the form that runs everywhere.
+
+### CASE in ORDER BY
+
+Sorting by a `CASE` allows you to order in different ways from normal column order.
+Here are the moods by
+sentiment, positive first, using the short form from above:
+
+```console
+sqlite> select name, sentiment from mood
+   ...> order by case sentiment when 'positive' then 1
+   ...>                         when 'neutral'  then 2
+   ...>                         else 3 end,
+   ...>          name;
+╭────────────┬───────────╮
+│    name    │ sentiment │
+╞════════════╪═══════════╡
+│ determined │ positive  │
+│ grateful   │ positive  │
+│ happy      │ positive  │
+│ proud      │ positive  │
+│ calm       │ neutral   │
+│ anxious    │ negative  │
+│ frustrated │ negative  │
+│ sad        │ negative  │
+╰────────────┴───────────╯
+```
+
+We include name in the case as a tie-breaker, so the same sentiments are
+ordered by their name.
+
+The same idea ranks search results. A search box in the journal matches titles
+that contain what you typed, but a title that starts with it is the better
+match, so it should come first:
+
+```console
+sqlite> select date, title from entry
+   ...> where title like '%back%'
+   ...> order by case when title like 'back%' then 0 else 1 end,
+   ...>          date desc;
+╭────────────┬─────────────────────╮
+│    date    │        title        │
+╞════════════╪═════════════════════╡
+│ 2025-04-18 │ Back to the gym     │
+│ 2024-09-20 │ Back to the gym     │
+│ 2024-04-29 │ Back pain           │
+│ 2024-09-08 │ Cleared the backlog │
+│ 2024-08-12 │ First game back     │
+│ 2024-05-20 │ Cleared the backlog │
+│ 2024-03-06 │ Cleared the backlog │
+╰────────────┴─────────────────────╯
+```
+
+`WHERE` does all the filtering: every row here contains "back" somewhere. The
+`CASE` removes nothing. It computes a sort key of 0 for titles that start with
+"back" and 1 for the rest, and ascending order puts the 0s first.
+
+The second key matters as much as the first. Without it, rows with the same rank
+come back in whatever order the engine produced them. `date desc` states the order
+you actually want within each rank. Any time an `ORDER BY` key can tie, decide what
+should break the tie.
+
+## Creating a table
+
+The rest of the chapter changes data, so it needs a copy of the database it is
+allowed to change. `.backup` writes a consistent copy of the open database to a
+new file, and it works from a read-only session. Then quit, and open the copy
+normally, so that your `.sqliterc` runs again for the new session:
+
+```console
+sqlite> .backup scratch.db
+sqlite> .quit
+$ sqlite3 scratch.db
+```
+
+Delete `scratch.db` and repeat those three lines whenever you want to start
+over.
+
+The journal application is getting a feature: when you open a blank entry, it
+offers you a writing prompt. The prompts need a table:
+
+```sql
+create table prompt (
+  id         integer primary key,
+  question   text not null unique,
+  category   text not null default 'reflection'
+             check (category in ('reflection', 'gratitude', 'planning')),
+  times_used integer not null default 0 check (times_used >= 0),
+  last_used  text check (last_used is date(last_used))
+);
+```
+
+Each column is a name, a type, and any number of constraints.
+
+- **The types** here are `integer` and `text`. In an ordinary SQLite table a
+  declared type is a preference rather than a rule, as
+  <ChapterRef id="what-sqlite-is" /> warned, and <ChapterRef id="types" />
+  covers `STRICT` tables, which make it a rule.
+- **`integer primary key`** makes `id` the row's identity, and SQLite assigns a
+  value when an insert leaves it out. That exact spelling is special in SQLite,
+  for reasons <ChapterRef id="keys-and-row-identity" /> explains.
+- **`not null`** rejects a missing value.
+- **`unique`** rejects a value that another row already has, using an index
+  SQLite creates for the purpose. As the section on `NULL` promised, `NULL`s
+  never count as duplicates of each other, so a nullable unique column accepts
+  any number of them.
+- **`default`** supplies a value when an insert does not mention the column. It
+  can be a literal, `CURRENT_TIMESTAMP` as in the journal's `session` table, or
+  any expression in parentheses.
+- **`check`** takes any expression over the row's columns and rejects the row
+  when the expression is false.
+
+A `NULL` result is not false, so the row goes in. That is why `times_used` is
+`not null` as well as checked: without `not null`, a `NULL` would slip straight
+past `times_used >= 0`.
+
+It is also why `last_used` is checked with `IS` where `=` looks more natural.
+`date()` returns `NULL` for anything it cannot read as a date, which makes an
+`=` comparison `NULL`, and a `NULL` check passes.
+
+Insert one row, naming only the column that has no default:
+
+```console
+sqlite> insert into prompt (question) values ('What went well today?');
+sqlite> select * from prompt;
+╭────┬───────────────────────┬────────────┬────────────┬───────────╮
+│ id │       question        │  category  │ times_used │ last_used │
+╞════╪═══════════════════════╪════════════╪════════════╪═══════════╡
+│  1 │ What went well today? │ reflection │          0 │ NULL      │
+╰────┴───────────────────────┴────────────┴────────────┴───────────╯
+```
+
+SQLite assigned the id, and the defaults filled in the rest. Now break each rule
+once:
+
+```console
+sqlite> insert into prompt (category) values ('planning');
+Error near line 1: NOT NULL constraint failed: prompt.question
+sqlite> insert into prompt (question) values ('What went well today?');
+Error near line 2: UNIQUE constraint failed: prompt.question
+sqlite> insert into prompt (question, category) values ('Any regrets?', 'regret');
+Error near line 3: CHECK constraint failed: category in ('reflection', 'gratitude', 'planning')
+sqlite> insert into prompt (question, times_used) values ('Any surprises?', -1);
+Error near line 4: CHECK constraint failed: times_used >= 0
+sqlite> insert into prompt (question, last_used) values ('Any surprises?', 'yesterday');
+Error near line 5: CHECK constraint failed: last_used is date(last_used)
+```
+
+The line numbers count from the start of the shell session, so yours will be
+different. A failed check reports its expression.
+
+Two more habits before moving on. `create table if not exists` does nothing when
+the table is already there, which makes a schema script safe to run twice.
+PostgreSQL and MySQL support it too. And settle the
+constraints when you create the table. SQLite's `ALTER TABLE` can add a column,
+and a unique index can be added at any time, but adding a `CHECK` or a
+`NOT NULL` to a column that already exists means rebuilding the table,
+which <ChapterRef id="schema-evolution" /> walks through. PostgreSQL and MySQL can add
+either one in place, which makes this habit more important in SQLite than
+elsewhere. Foreign keys, the one kind of constraint this section has left out,
+are the subject of <ChapterRef id="constraints-and-relationships" />.
+
+## Writing rows
+
+Three statements change data, `INSERT`, `UPDATE` and `DELETE`, and in SQLite all
+three accept a `RETURNING` clause that reports the rows they changed. PostgreSQL
+has the same clause, but MySQL does not have it. The examples below lean on it,
+because it shows what a write did without a second query.
+
+### INSERT
+
+`insert` takes a column list and one or more rows of values. Always write the
+column list. Without it, values are matched to columns by position, and the
+statement stops working the day someone adds a column.
+
+`RETURNING`, added in 3.35.0, includes the values SQLite filled in itself.
+Without it, an application needs a second query to learn the ids it just
+created:
+
+```console
+sqlite> insert into prompt (question, category) values
+   ...>   ('Who made today easier?', 'gratitude'),
+   ...>   ('What does tomorrow have to include?', 'planning')
+   ...> returning id, question, category;
+╭────┬─────────────────────────────────────┬───────────╮
+│ id │              question               │ category  │
+╞════╪═════════════════════════════════════╪═══════════╡
+│  2 │ Who made today easier?              │ gratitude │
+│  3 │ What does tomorrow have to include? │ planning  │
+╰────┴─────────────────────────────────────┴───────────╯
+```
+
+A statement succeeds or fails as a whole, so one bad row in a multi-row insert
+rejects all of them.
+
+The rows can come from a query instead of a list. `insert ... select` writes one
+row for each row the query returns, and here it turns two of the quoted authors
+into prompts:
+
+```console
+sqlite> insert into prompt (question)
+   ...> select distinct 'What would ' || author || ' make of today?'
+   ...> from quote
+   ...> where author in ('Seneca', 'Epictetus')
+   ...> returning id, question;
+╭────┬─────────────────────────────────────╮
+│ id │              question               │
+╞════╪═════════════════════════════════════╡
+│  4 │ What would Epictetus make of today? │
+│  5 │ What would Seneca make of today?    │
+╰────┴─────────────────────────────────────╯
+```
+
+The `distinct` is doing real work. Seneca has three quotes in the table, so
+without it the query produces the same question three times, `unique` rejects
+the second copy, and by the rule above the whole statement fails. What to do on
+a conflict other than fail, whether that is skipping the row or updating the one
+already there, is <ChapterRef id="writing-data" />.
+
+### UPDATE
+
+`update` sets new values on every row that matches its `WHERE`. In SQLite, as in
+standard SQL, the expressions on the right-hand side all see the row's values
+from before the update. MySQL differs: it applies assignments left to right, so
+a later one sees what an earlier one has just set. Either way, incrementing a
+counter takes one statement:
+
+```console
+sqlite> update prompt
+   ...> set times_used = times_used + 1, last_used = '2026-01-15'
+   ...> where id = 1
+   ...> returning id, times_used, last_used;
+╭────┬────────────┬────────────╮
+│ id │ times_used │ last_used  │
+╞════╪════════════╪════════════╡
+│  1 │          1 │ 2026-01-15 │
+╰────┴────────────┴────────────╯
+```
+
+The `WHERE` is the whole of an update's safety. Leave it out and the statement
+changes every row in the table, without asking. One habit costs nothing: write
+the `WHERE` as a `SELECT` first, look at what it matches, and only then turn it
+into the update.
+
+Here is that habit on real data. The quotes spell Marcus Aurelius three
+different ways, and `LIKE` found all four of his quotes earlier, so it can find
+the ones to fix:
+
+```console
+sqlite> select id, author from quote where author like 'marcus aurelius';
+╭────┬─────────────────╮
+│ id │     author      │
+╞════╪═════════════════╡
+│  2 │ Marcus Aurelius │
+│  3 │ marcus aurelius │
+│ 12 │ Marcus Aurelius │
+│ 13 │ MARCUS AURELIUS │
+╰────┴─────────────────╯
+sqlite> update quote set author = 'Marcus Aurelius'
+   ...> where author like 'marcus aurelius' and author <> 'Marcus Aurelius'
+   ...> returning id, author;
+╭────┬─────────────────╮
+│ id │     author      │
+╞════╪═════════════════╡
+│  3 │ Marcus Aurelius │
+│ 13 │ Marcus Aurelius │
+╰────┴─────────────────╯
+```
+
+The second condition skips the two rows that were already right, so `RETURNING`
+lists only real changes. The same fix for Kierkegaard does nothing at all.
+`like 'søren kierkegaard'` never matches `SØREN KIERKEGAARD`, for the ASCII
+reason in the section on matching text, and the update changes zero rows without
+complaint. A cleanup that relies on case folding needs checking after it runs,
+not just running.
+
+### DELETE
+
+`delete` removes every row that matches its `WHERE`, with the same warning
+about leaving it out. Four of the journal's login sessions had expired by the
+dataset's frozen clock of `2026-01-15 09:00:00`, and pruning them is a job a web
+application runs on every login:
+
+```console
+sqlite> delete from session
+   ...> where expires_at < '2026-01-15 09:00:00'
+   ...> returning substr(session_id, 1, 8) as session, expires_at;
+╭──────────┬─────────────────────╮
+│ session  │     expires_at      │
+╞══════════╪═════════════════════╡
+│ 0bbe3815 │ 2026-01-15 06:33:01 │
+│ 10cd6e36 │ 2026-01-14 20:00:34 │
+│ 8419e4c0 │ 2026-01-07 14:27:29 │
+│ ab7d2423 │ 2026-01-12 05:49:20 │
+╰──────────┴─────────────────────╯
+```
+
+`RETURNING` takes expressions, not only column names, and here it shortens the
+64-character session ids. On a `DELETE` it reports each row as it was just
+before it went. The order of its rows is arbitrary, and nothing in the statement
+can sort them.
+
+Deleting from `entry` would do more than it says. With
+`PRAGMA foreign_keys = ON`, which your `.sqliterc` sets, deleting an entry also
+deletes its rows in `entry_tag`, and a trigger removes it from the search index.
+
+<ChapterRef id="constraints-and-relationships" /> and
+<ChapterRef id="triggers" /> cover those two mechanisms.
+
+### Trying a write safely
+
+On a copy like `scratch.db`, a mistake costs you a new copy. On data you care
+about, wrap the experiment in a transaction. `begin` starts one, and nothing you
+change is permanent until `commit`. `rollback` throws all of it away instead:
+
+```console
+sqlite> begin;
+sqlite> delete from quote;
+sqlite> select count(*) from quote;
+╭──────────╮
+│ count(*) │
+╞══════════╡
+│        0 │
+╰──────────╯
+sqlite> rollback;
+sqlite> select count(*) from quote;
+╭──────────╮
+│ count(*) │
+╞══════════╡
+│       18 │
+╰──────────╯
+```
+
+That is a `DELETE` without a `WHERE`, doing exactly what it says, and then being
+taken back. Do not leave a transaction open while you think, though. In SQLite,
+an open write transaction holds the database's one write lock, and every other
+connection that wants to write is blocked until it ends, as <ChapterRef id="transactions-and-concurrency" /> explains.
+
+## Takeaways
+
+- **Use single quotes for values, double quotes for names**.
+
+- **The shell is not your application.** It rejects double-quoted strings and
+  supplies a `regexp()` function, and your application may do neither. Test a
+  query on the connection that will run it.
+
+- **Clauses take effect in a fixed order, not the order you write them.**
+  `FROM`, `WHERE`, `GROUP BY`, `HAVING`, `SELECT`, `DISTINCT`, `ORDER BY`, then
+  `LIMIT`. That is why `ORDER BY` can use a name from the select list and,
+  outside SQLite, `WHERE` cannot, and why `LIMIT` takes its rows from the sorted
+  result.
+
+- **No `ORDER BY`, no order.** Rows without one come back in whatever order the
+  plan produces, and `LIMIT` then takes an arbitrary few.
+
+- **Break ties explicitly.** When an `ORDER BY` key can tie, add a second key.
+  Rows that tie are in no particular order either.
+
+- **`OFFSET` is not free.** The engine produces every skipped row and throws it
+  away, so deep pages get slower the further in they are. For long lists, use
+  keyset pagination instead.
+
+- **Write ranges as `>= start and < end`.** `BETWEEN` includes both ends, and a
+  timestamp on the last day sorts after the date it starts with.
+
+- **Every `<>` or `NOT IN` on a nullable column needs a decision about `NULL`.**
+  Those rows fail both `=` and `<>`. `IS DISTINCT FROM`, or `IS NOT` in SQLite,
+  treats `NULL` as a value, and a `NULL` inside a `NOT IN` list makes it match
+  nothing.
+
+- **A `CHECK` passes when its expression is `NULL`.** Pair it with `NOT NULL`,
+  or in SQLite compare with `IS` when the expression can produce `NULL` from bad
+  input.
+
+- **In SQLite, `LIKE` and `NOCASE` fold ASCII only.** `ø` and `Ø` are different
+  characters to them, and a cleanup that relies on case folding can silently
+  skip rows.
+
+- **Escape `%` and `_` in user input bound into a `LIKE` pattern.** A parameter
+  stops injection, but the value is still read as a pattern.
+
+- **A statement is all or nothing.** One bad row fails a multi-row insert, and
+  `begin` and `rollback` stretch the same guarantee over several statements
+  while you experiment.

@@ -229,6 +229,8 @@ line SQL again, and the parser rejects it:
 ```console
 sqlite>  .tables
 Parse error near line 1: near ".": syntax error
+  .tables
+  ^--- error here
 ```
 
 A dot command is one line, and it takes no semicolon. SQL is the opposite: it
@@ -265,8 +267,9 @@ CREATE TABLE city(
 CREATE INDEX city_country on city(country);
 ```
 
-`.schema` with no argument prints the whole schema, and with a name prints just
-that object. `--indent` reformats the statement across lines; without it you get
+`.schema` with no argument prints the whole schema, and with a table name prints
+that table followed by its indexes and triggers, which is why `city_country`
+appears above. `--indent` reformats the statement across lines; without it you get
 the text exactly as it was when the table was created, which is what SQLite
 stores. It stores the original text and not a normalised version of it, a detail
 that becomes important in <ChapterRef id="schema-evolution" />.
@@ -502,7 +505,8 @@ The seven that matter:
 
 `.schema` prints the definitions, and the comments in this one survived into the
 database because SQLite stores the text of a `CREATE TABLE` statement exactly as
-you typed it:
+you typed it. The table's two indexes and three triggers follow it; the triggers
+are what keep the search index in step with the entries:
 
 ```console
 sqlite> .schema entry --indent
@@ -515,6 +519,20 @@ CREATE TABLE entry(
   -- SET NULL, not CASCADE: retiring a mood must never destroy journal entries.
   FOREIGN KEY(mood_id) REFERENCES mood(id) ON UPDATE CASCADE ON DELETE SET NULL
 );
+CREATE UNIQUE INDEX idx_entry_date ON entry(date);
+CREATE INDEX idx_entry_mood_id ON entry(mood_id);
+CREATE TRIGGER entry_ai AFTER INSERT ON entry BEGIN
+  INSERT INTO entry_fts(rowid, title, content) VALUES (NEW.id, NEW.title, NEW.content);
+END;
+CREATE TRIGGER entry_ad AFTER DELETE ON entry BEGIN
+  INSERT INTO entry_fts(entry_fts, rowid, title, content)
+  VALUES ('delete', OLD.id, OLD.title, OLD.content);
+END;
+CREATE TRIGGER entry_au AFTER UPDATE OF id, title, content ON entry BEGIN
+  INSERT INTO entry_fts(entry_fts, rowid, title, content)
+  VALUES ('delete', OLD.id, OLD.title, OLD.content);
+  INSERT INTO entry_fts(rowid, title, content) VALUES (NEW.id, NEW.title, NEW.content);
+END;
 ```
 
 That `ON DELETE SET NULL`, and every other foreign key rule in the file, is

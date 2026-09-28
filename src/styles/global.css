@@ -44,6 +44,12 @@
   margin-top: 0.9em;
 }
 
+/* Cascadia Code, the mono font on Windows, draws `!=` as ≠ and `<=` as ≤ by
+   default. A reader copying an operator needs the characters they must type. */
+:is(code, kbd, samp, pre) {
+  font-variant-ligatures: none;
+}
+
 /* Identifiers like `-wal` and `PRAGMA busy_timeout` appear constantly; the
    plugin's quote marks around inline code add noise at that density. */
 .prose :not(pre)>code {
