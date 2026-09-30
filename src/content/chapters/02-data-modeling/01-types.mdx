@@ -1,0 +1,801 @@
+---
+title: Types
+description: What SQLite actually stores and how it decides. Storage classes, type affinity, STRICT tables and how to deal with missing datatypes such as dates, booleans, and enums.
+sketches: ["020", "021", "022"]
+---
+
+import ChapterRef from "@components/ChapterRef.astro";
+
+## Following along
+
+<ChapterRef id="what-sqlite-is" /> made a claim that surprises most people who
+come from another database: a column declared `INTEGER` will store `'banana'`.
+This chapter explains why, what SQLite does with a declared type instead, and
+how to turn strict behaviour on when you want it. The second half covers the
+types SQLite does not have at all: dates, booleans, money and enums, and how to
+build each one from the types it does have.
+
+Nearly every example creates a table or writes a row, so grab a copy of the
+journal:
+
+```console
+$ sqlite3 -readonly journal.db
+sqlite> .backup scratch.db
+sqlite> .quit
+$ sqlite3 scratch.db
+```
+
+## Five storage classes
+
+Every value SQLite stores has one of five storage classes: `INTEGER`, `REAL`,
+`TEXT`, `BLOB` or `NULL`. That is the whole list. There is no date type, no
+boolean, no decimal and no JSON type. `typeof()` reports the class of any value:
+
+```console
+sqlite> select typeof(42), typeof(4.2), typeof('42'), typeof(x'2a'), typeof(null);
+╭────────────┬─────────────┬──────────────┬───────────────┬──────────────╮
+│ typeof(42) │ typeof(4.2) │ typeof('42') │ typeof(x'2a') │ typeof(null) │
+╞════════════╪═════════════╪══════════════╪═══════════════╪══════════════╡
+│ integer    │ real        │ text         │ blob          │ null         │
+╰────────────┴─────────────┴──────────────┴───────────────┴──────────────╯
+```
+
+The important word is _value_. In SQLite the storage class belongs to each
+value, not to the column it sits in, so two rows of the same column can hold
+different classes. The journal's rows show the ordinary case, where a date is
+text and a missing mood is `NULL`:
+
+```console
+sqlite> select id, typeof(id), date, typeof(date), mood_id, typeof(mood_id)
+   ...> from entry
+   ...> where id between 26 and 27;
+╭────┬────────────┬────────────┬──────────────┬─────────┬─────────────────╮
+│ id │ typeof(id) │    date    │ typeof(date) │ mood_id │ typeof(mood_id) │
+╞════╪════════════╪════════════╪══════════════╪═════════╪═════════════════╡
+│ 26 │ integer    │ 2024-03-13 │ text         │       8 │ integer         │
+│ 27 │ integer    │ 2024-03-16 │ text         │ NULL    │ null            │
+╰────┴────────────┴────────────┴──────────────┴─────────┴─────────────────╯
+```
+
+### INTEGER and REAL
+
+An `INTEGER` is a signed whole number of up to 8 bytes. On disk SQLite stores
+each one in the fewest bytes that hold it, 1, 2, 3, 4, 6 or 8, and the values
+0 and 1 take no bytes at all beyond the column's header entry. Read into memory,
+every integer is 8 bytes again, which is why the storage class and the data type
+can usually be treated as the same thing.
+
+The size depends on the value, not on what the column was declared as. Three
+tables with the same declaration and 10,000 rows each show it. `dbstat` is a
+virtual table the shell provides that reports the pages each table uses:
+
+```console
+sqlite> create table ones  (n integer);
+sqlite> create table small (n integer);
+sqlite> create table large (n integer);
+sqlite> insert into ones  select 1                     from generate_series(1, 10000);
+sqlite> insert into small select value                 from generate_series(1, 10000);
+sqlite> insert into large select value + 1000000000000 from generate_series(1, 10000);
+sqlite> select name, count(*) as pages, sum(pgsize) as bytes
+   ...> from dbstat
+   ...> where name in ('ones', 'small', 'large')
+   ...> group by name
+   ...> order by bytes;
+╭───────┬───────┬────────╮
+│ name  │ pages │ bytes  │
+╞═══════╪═══════╪════════╡
+│ ones  │    19 │  77824 │
+│ small │    23 │  94208 │
+│ large │    33 │ 135168 │
+╰───────┴───────┴────────╯
+sqlite> drop table ones; drop table small; drop table large;
+```
+
+The values in `ones` take no space at all, and the table still needs 19
+pages, because every row carries more than its value: its rowid, the length of
+the row and a small header. SQLite writes all of those as _varints_,
+variable-length integers of 1 to 9 bytes.
+
+A varint spends the top bit of each byte as a flag meaning "another byte
+follows" and keeps the other seven bits for the number. To write 1,000, split
+its binary form into groups of seven bits, `0000111 1101000`, set the flag on
+every group but the last, and you get the two bytes `10000111 01101000`. Every
+rowid below 128 fits in one byte, every rowid below 16,384 in two, and a fixed
+8-byte field would spend eight on all of them. That is the practical case for
+small integer keys, and <ChapterRef id="keys-and-row-identity" /> takes it
+further. <ChapterRef id="inside-the-file" /> shows where the headers and varints
+sit in a page.
+
+A `REAL` is always an 8-byte IEEE 754 double, the same `double` as in C or
+`number` in JavaScript. It holds 15 to 17 significant decimal digits, and it
+cannot hold most decimal fractions exactly, which is the problem the section on
+money below has to solve. An integer too large for 8 bytes quietly becomes a
+`REAL`, precision and all:
+
+```console
+sqlite> select 9223372036854775807 + 1 as overflowed, typeof(9223372036854775808) as literal;
+╭────────────────────────┬─────────╮
+│       overflowed       │ literal │
+╞════════════════════════╪═════════╡
+│ 9.2233720368547758e+18 │ real    │
+╰────────────────────────┴─────────╯
+```
+
+### TEXT and BLOB
+
+`TEXT` is a string in the database's encoding, which is UTF-8 unless the
+database was created as UTF-16, and which `pragma encoding` reports. `length()`
+counts characters, while `octet_length()`, added in 3.43.0, counts the bytes
+they take. Kierkegaard's ø is one character and two bytes:
+
+```console
+sqlite> select author, length(author), octet_length(author)
+   ...> from quote
+   ...> where id = 17;
+╭───────────────────┬────────────────┬──────────────────────╮
+│      author       │ length(author) │ octet_length(author) │
+╞═══════════════════╪════════════════╪══════════════════════╡
+│ Søren Kierkegaard │             17 │                   18 │
+╰───────────────────┴────────────────┴──────────────────────╯
+```
+
+A `BLOB` is a run of bytes stored exactly as given. It is written as a hex
+literal, `x'2a'` above, and nothing in SQLite interprets it. We revisit BLOBs later.
+
+## Type affinity
+
+In most SQL databases, a column's type decides what the column accepts. In an
+ordinary SQLite table it decides which storage class the
+column _prefers_. That preference is the column's _affinity_, and SQLite acts on
+it by converting a value when the conversion loses nothing, and storing the
+value unchanged when it would.
+
+The journal's `mood_id` is declared `INTEGER`. An application that reads the
+mood from a form field and passes it on as the text `'3'` still ends up with an
+integer in the table, because `'3'` converts to `3` without loss:
+
+```console
+sqlite> insert into entry (date, title, content, mood_id)
+   ...> values ('2026-01-15', 'Reading about types', 'Declared types are suggestions.', '3')
+   ...> returning id, mood_id, typeof(mood_id);
+╭─────┬─────────┬─────────────────╮
+│ id  │ mood_id │ typeof(mood_id) │
+╞═════╪═════════╪═════════════════╡
+│ 220 │       3 │ integer         │
+╰─────┴─────────┴─────────────────╯
+```
+
+That conversion is what keeps SQL written for other databases working in
+SQLite. It also means that `'banana'` in the same column is stored as the text
+`'banana'`, because there is no integer it could become.
+
+### How a declared type becomes an affinity
+
+There are five affinities, `INTEGER`, `REAL`, `NUMERIC`, `TEXT` and `BLOB`, and
+SQLite derives one from whatever type name you declare by using a set of rules:
+
+| The declared type contains  | Affinity  | Examples                                                |
+| --------------------------- | --------- | ------------------------------------------------------- |
+| `INT`                       | `INTEGER` | `int`, `bigint`, `integer`, `point`                     |
+| `CHAR`, `CLOB` or `TEXT`    | `TEXT`    | `text`, `varchar(10)`, `nchar(5)`                       |
+| `BLOB`, or there is no type | `BLOB`    | `blob`, a bare column name                              |
+| `REAL`, `FLOA` or `DOUB`    | `REAL`    | `real`, `float`, `double precision`                     |
+| anything else               | `NUMERIC` | `numeric`, `decimal(10,2)`, `boolean`, `date`, `string` |
+
+`TEXT` affinity turns numbers into text. `NUMERIC` affinity turns text that
+looks like a number into an integer if it is a whole number and a real
+otherwise. `INTEGER` behaves like `NUMERIC`, and `REAL` like `NUMERIC` except
+that whole numbers are stored as reals. `BLOB` affinity converts nothing. SQLite
+never enforces a length either: the `10` in `varchar(10)` is ignored.
+
+Here are all five, each given the same four values:
+
+```console
+sqlite> create table affinity (i integer, r real, n numeric, t text, b blob);
+sqlite> insert into affinity values
+   ...>   ('007', '007', '007', '007', '007'),
+   ...>   ('4.0', '4.0', '4.0', '4.0', '4.0'),
+   ...>   (42, 42, 42, 42, 42),
+   ...>   ('banana', 'banana', 'banana', 'banana', 'banana');
+sqlite> select quote(i), quote(r), quote(n), quote(t), quote(b) from affinity;
+╭──────────┬──────────┬──────────┬──────────┬──────────╮
+│ quote(i) │ quote(r) │ quote(n) │ quote(t) │ quote(b) │
+╞══════════╪══════════╪══════════╪══════════╪══════════╡
+│ 7        │ 7.0      │ 7        │ '007'    │ '007'    │
+│ 4        │ 4.0      │ 4        │ '4.0'    │ '4.0'    │
+│ 42       │ 42.0     │ 42       │ '42'     │ 42       │
+│ 'banana' │ 'banana' │ 'banana' │ 'banana' │ 'banana' │
+╰──────────┴──────────┴──────────┴──────────┴──────────╯
+```
+
+`'007'` lost its leading zeros in every numeric column. `'4.0'` became the integer `4`
+under `INTEGER` and `NUMERIC`, because the conversion loses nothing. The
+`TEXT` column turned `42` into `'42'`, and the `BLOB` column kept every value
+exactly as it came.
+
+### Comparing and sorting mixed values
+
+When one column holds values of different classes, they sort by class first:
+`NULL`, then integers and reals together in numeric order, then text, then
+BLOBs. So a text `'9'` sorts after an integer `10`:
+
+```console
+sqlite> select v, typeof(v) from (
+   ...>   select 10 as v union all select '9' union all select 2.5
+   ...>   union all select x'00' union all select null
+   ...> )
+   ...> order by v;
+╭──────┬───────────╮
+│  v   │ typeof(v) │
+╞══════╪═══════════╡
+│ NULL │ null      │
+│  2.5 │ real      │
+│   10 │ integer   │
+│ 9    │ text      │
+│      │ blob      │
+╰──────┴───────────╯
+```
+
+Comparisons are gentler, because affinity applies to them too. When a column
+with `INTEGER`, `REAL` or `NUMERIC` affinity is compared with text, the text is
+converted first, so `where mood_id = '3'` finds the same rows as
+`where mood_id = 3`. A column with `TEXT` affinity converts the number to text
+instead.
+
+Beware of numbers stored as text, which is what a CSV imported into
+`text` columns holds, and what an untyped column keeps when given a string. Text
+compares character by character, so `'10'` sorts before
+`'9'` and `max()` returns the wrong row.
+
+### CAST is not affinity
+
+`cast()` converts explicitly, and it is far more forgiving than affinity. It
+reads a number from the start of a string and ignores the rest, and a string
+with no number at the start becomes zero:
+
+```console
+sqlite> select cast('12abc' as integer), cast('abc' as integer), cast('3.9' as integer);
+╭──────────────────────────┬────────────────────────┬────────────────────────╮
+│ cast('12abc' as integer) │ cast('abc' as integer) │ cast('3.9' as integer) │
+╞══════════════════════════╪════════════════════════╪════════════════════════╡
+│                       12 │                      0 │                      3 │
+╰──────────────────────────┴────────────────────────┴────────────────────────╯
+```
+
+Affinity would have kept all three as text, because none of them converts
+without loss. `cast()` is useful for tidying data you have already checked,
+and dangerous as a way of validating it: bad input becomes a plausible number
+and no error.
+
+### Why the default is flexible
+
+SQLite began as an extension for Tcl, a language in which every value is a
+string, and its first versions stored everything as text. Version 3.0.0, in
+2004, introduced storage classes and affinity, so that SQL written for
+statically typed databases would behave the same way in SQLite without taking
+away what the typeless design allowed. Two decades of files and applications now
+depend on that behaviour, and SQLite's commitment to backwards compatibility
+means the default cannot change.
+
+The SQLite developers argue that it should not change either. A column that
+accepts any value suits data whose type genuinely varies, such as a settings
+table or the values pulled out of a JSON document, and an application that
+already validates its input gains nothing from a second check. The cost is that
+a type error in your application becomes a quiet data problem instead of a loud
+failure. Whether that trade is worth it is up to you, and since 3.37.0 you can
+decide table by table.
+
+## STRICT tables
+
+Add `STRICT` after the closing parenthesis of a `CREATE TABLE` and the declared
+types become rules. We can add a new feature to the journal to try this:
+
+```console
+sqlite> create table attachment (
+   ...>   id         integer primary key,
+   ...>   entry_id   integer not null references entry(id) on delete cascade,
+   ...>   filename   text not null,
+   ...>   size       integer not null,
+   ...>   bytes      blob not null
+   ...> ) strict;
+sqlite> select name, strict from pragma_table_list where name in ('entry', 'attachment');
+╭────────────┬────────╮
+│    name    │ strict │
+╞════════════╪════════╡
+│ attachment │      1 │
+│ entry      │      0 │
+╰────────────┴────────╯
+```
+
+A strict table accepts six type names and nothing else: `INT`, `INTEGER`,
+`REAL`, `TEXT`, `BLOB` and `ANY`. Every column must have one. A value that can
+be converted losslessly to the column's type still is, exactly as affinity would
+do it, so the text `'4'` goes into `size` as the integer `4`. A value that
+cannot be converted is rejected.
+
+`ANY` is the escape hatch. In a strict table an `ANY` column stores every value
+exactly as given, with no conversion at all. In an ordinary table `any` is just
+another type name, which falls through to the last rule and gets `NUMERIC`
+affinity, so `'007'` becomes `7`. That is the one place where the same
+declaration means opposite things in the two kinds of table.
+
+Two limits are worth knowing. SQLite versions older than 3.37.0 cannot read a
+database containing a strict table at all, and report its schema as malformed,
+so check which version every tool that opens the file is running. And an
+existing table cannot be made strict in place: it has to be rebuilt, as <ChapterRef id="schema-evolution" /> shows.
+
+For new tables, `STRICT` is worth the one word it costs. It turns a type bug in
+application code into an error at the moment of the insert, which is when it is
+cheapest to fix.
+
+## Dates and times
+
+SQLite has no date type. The date and time functions accept and produce three
+representations, and a column can store any of them:
+
+- **`TEXT`** in ISO 8601 form, `'YYYY-MM-DD HH:MM:SS'`, optionally with
+  fractional seconds.
+- **`REAL`** as a Julian day number, the days since noon in Greenwich on
+  24 November 4714 BC, with the time of day as the fraction.
+- **`INTEGER`** as Unix time, the seconds since 1970-01-01 00:00:00 UTC.
+
+The functions convert freely between them. Here is the journal's first entry in
+all three:
+
+```console
+sqlite> select date, julianday(date), unixepoch(date) from entry where id = 1;
+╭────────────┬─────────────────┬─────────────────╮
+│    date    │ julianday(date) │ unixepoch(date) │
+╞════════════╪═════════════════╪═════════════════╡
+│ 2024-01-04 │       2460313.5 │      1704326400 │
+╰────────────┴─────────────────┴─────────────────╯
+```
+
+The journal stores `TEXT`, and for most applications that is the right choice.
+It is readable in any tool without a conversion, every date function accepts
+it, and text in this exact shape sorts chronologically, so comparisons,
+`ORDER BY` and an ordinary index all work on it as they stand. Its costs are
+size, 10 bytes for a date and 19 for a timestamp against 4 to 8 for an integer,
+and the fact that it only sorts correctly while every value has the same shape.
+
+Unix time as an `INTEGER` is the better choice when timestamps are compared or
+subtracted far more often than they are read by people, or when the application
+already works in epoch seconds. Julian day numbers are rarely worth storing, but
+`julianday()` is handy for arithmetic in days.
+
+### One format, enforced
+
+Text comparison is only date comparison when both sides are in the same format.
+JavaScript's `toISOString()`, among others, produces a `T` between the date and
+the time and a `Z` at the end, and a `T` sorts after a space:
+
+```console
+sqlite> select '2026-01-15T08:00:00.000Z' < '2026-01-15 09:00:00' as earlier,
+   ...>        datetime('2026-01-15T08:00:00.000Z') as normalised;
+╭─────────┬─────────────────────╮
+│ earlier │     normalised      │
+╞═════════╪═════════════════════╡
+│       0 │ 2026-01-15 08:00:00 │
+╰─────────┴─────────────────────╯
+```
+
+8 o'clock is not earlier than 9 o'clock as far as the text is concerned.
+`datetime()` reads the other format and hands back SQLite's own. The journal's
+`session` table goes one step further and refuses any timestamp that
+`datetime()` would change, with the same `IS` check that <ChapterRef id="sql-crash-course" /> used for a date:
+
+```console
+sqlite> insert into session (session_id, user_id, expires_at)
+   ...> values ('demo', 1, '2026-02-14T09:00:00.000Z');
+Error near line 1: CHECK constraint failed: expires_at IS datetime(expires_at)
+```
+
+Pick one format per column, and enforce it with a `CHECK`. Converting at the
+boundary, in the application or with `datetime(?)` in the insert, is then the
+only way in.
+
+### The functions
+
+| Function                   | Returns                                           |
+| -------------------------- | ------------------------------------------------- |
+| `date(t, ...)`             | `'YYYY-MM-DD'`                                    |
+| `time(t, ...)`             | `'HH:MM:SS'`                                      |
+| `datetime(t, ...)`         | `'YYYY-MM-DD HH:MM:SS'`                           |
+| `julianday(t, ...)`        | the Julian day number, a `REAL`                   |
+| `unixepoch(t, ...)`        | Unix time, an `INTEGER`; added in 3.38.0          |
+| `strftime(format, t, ...)` | `t` formatted by `format`                         |
+| `timediff(a, b)`           | how far `a` is from `b`, as text; added in 3.43.0 |
+
+`t` is a time value in any of the three representations, or `'now'`, which is
+the current time in UTC. A bare number is read as a Julian day, so a Unix
+timestamp needs the `'unixepoch'` modifier: `datetime(1768467600, 'unixepoch')`.
+Every one of them returns `NULL` for input it cannot read, which is what makes
+the `IS` checks above work.
+
+`strftime()` takes the usual C-style substitutions: `%Y`, `%m` and `%d` for the
+date, `%H`, `%M` and `%S` for the time, `%j` for the day of the year, `%u` for
+the day of the week with Monday as 1, and `%s` for Unix time. It has no names
+for days or months, so a weekday name is a `CASE` or a lookup away.
+
+### Modifiers
+
+Every function but `timediff()` accepts any number of modifiers after the time
+value, applied left to right. Starting from the entry on 2025-12-23:
+
+```console
+sqlite> select date('2025-12-23', 'start of month') as first,
+   ...>        date('2025-12-23', 'start of month', '+1 month', '-1 day') as last,
+   ...>        date('2025-12-23', 'weekday 0') as sunday;
+╭────────────┬────────────┬────────────╮
+│   first    │    last    │   sunday   │
+╞════════════╪════════════╪════════════╡
+│ 2025-12-01 │ 2025-12-31 │ 2025-12-28 │
+╰────────────┴────────────┴────────────╯
+```
+
+`'start of month'` goes back to the first, and the chain `'+1 month', '-1 day'`
+from there is the standard way to reach the last day of any month. `'weekday 0'`
+moves forward to the next Sunday, or stays put on one.
+
+Adding months is the modifier to watch. `'+1 month'` adds one to the month
+number and then normalises the result, so 31 January plus a month is
+31 February, which normalises to 3 March. Since 3.46.0, a `'floor'` modifier
+after it asks for the last day of the intended month instead:
+
+```console
+sqlite> select date('2025-01-31', '+1 month') as normalised,
+   ...>        date('2025-01-31', '+1 month', 'floor') as floored;
+╭────────────┬────────────╮
+│ normalised │  floored   │
+╞════════════╪════════════╡
+│ 2025-03-03 │ 2025-02-28 │
+╰────────────┴────────────╯
+```
+
+A monthly reminder set up on the 31st will drift unless you decide which of
+those two you mean.
+
+### Extracting parts, and the index
+
+`strftime()` pulls a part out of a date, which answers questions like "what did
+I write in Decembers":
+
+```console
+sqlite> select count(*) from entry where strftime('%m', date) = '12';
+╭──────────╮
+│ count(*) │
+╞══════════╡
+│       21 │
+╰──────────╯
+```
+
+It works, but it has to compute `strftime()` for every row, so the index on
+`date` can only be scanned from end to end, never searched. A range on the
+column itself lets the index jump straight to the rows, which is why a single
+December is better written as a range:
+
+```console
+sqlite> explain query plan
+   ...> select count(*) from entry where strftime('%m', date) = '12';
+QUERY PLAN
+`--SCAN entry USING COVERING INDEX idx_entry_date
+sqlite> explain query plan
+   ...> select count(*) from entry where date >= '2025-12-01' and date < '2026-01-01';
+QUERY PLAN
+`--SEARCH entry USING COVERING INDEX idx_entry_date (date>? AND date<?)
+```
+
+`SCAN` reads every entry in the index, `SEARCH` only the ones in range. At 220
+rows the difference is invisible, and at two million it is not.
+
+<ChapterRef id="choosing-indexes" /> covers expression indexes, which make the
+first form searchable too.
+
+### Differences
+
+Subtracting two dates is a matter of choosing the unit. `julianday()` gives
+days, `unixepoch()` gives seconds, and `timediff()` gives a calendar answer in
+years, months and days:
+
+```console
+sqlite> select julianday('2025-12-31') - julianday('2024-01-04') as days,
+   ...>        unixepoch('2026-02-13 13:51:02') - unixepoch('2026-01-14 13:51:02') as seconds,
+   ...>        timediff('2026-01-15 09:00:00', '2024-01-04') as elapsed;
+╭───────┬─────────┬──────────────────────────╮
+│ days  │ seconds │         elapsed          │
+╞═══════╪═════════╪══════════════════════════╡
+│ 727.0 │ 2592000 │ +0002-00-11 09:00:00.000 │
+╰───────┴─────────┴──────────────────────────╯
+```
+
+The journal spans 727 days, a session lasts 2,592,000 seconds, and the
+dataset's frozen clock stops two years, eleven days and nine hours after the
+first entry.
+
+### Time zones
+
+SQLite has no time zone database, and every date function works in UTC.
+`'now'` is the current UTC time, `CURRENT_TIMESTAMP` is UTC, and a timestamp
+with no zone is taken to be UTC. Store instants that way: the journal's
+`created_at` and `expires_at` are UTC, and every server that ever touches them
+agrees on what they mean.
+
+## Booleans
+
+SQLite has no boolean type. `TRUE` and `FALSE`, recognised since 3.23.0, are
+spellings of the integers 1 and 0:
+
+```console
+sqlite> select true, false, typeof(true);
+╭──────┬───────┬──────────────╮
+│ true │ false │ typeof(true) │
+╞══════╪═══════╪══════════════╡
+│    1 │     0 │ integer      │
+╰──────┴───────┴──────────────╯
+```
+
+The journal lets you pin an entry to the top of the list. The column is an
+integer that must be 0 or 1, and the `CHECK` is what makes it a boolean rather
+than a number:
+
+```console
+sqlite> alter table entry add column pinned integer not null default 0
+   ...>   check (pinned in (0, 1));
+sqlite> update entry set pinned = true where id = 211 returning id, title, pinned;
+╭─────┬─────────────────────┬────────╮
+│ id  │        title        │ pinned │
+╞═════╪═════════════════════╪════════╡
+│ 211 │ New scratching post │      1 │
+╰─────┴─────────────────────┴────────╯
+sqlite> select id, title from entry where pinned;
+╭─────┬─────────────────────╮
+│ id  │        title        │
+╞═════╪═════════════════════╡
+│ 211 │ New scratching post │
+╰─────┴─────────────────────╯
+```
+
+`where pinned` works because a condition is true when its value is a non-zero
+number. It does not work on text, and that is how booleans go wrong in a
+flexible table. An application that writes the string `'true'`, as some drivers
+and form libraries do, stores text, and text in a condition is converted to a
+number first, which makes `'true'` zero:
+
+```console
+sqlite> select 'true' is true, 'false' is true, '1' is true;
+╭────────────────┬─────────────────┬─────────────╮
+│ 'true' is true │ 'false' is true │ '1' is true │
+╞════════════════╪═════════════════╪═════════════╡
+│              0 │               0 │           1 │
+╰────────────────┴─────────────────┴─────────────╯
+sqlite> update entry set pinned = 'true' where id = 212;
+Error near line 2: CHECK constraint failed: pinned in (0, 1)
+```
+
+Without the `CHECK`, that update would have succeeded, and entry 212 would have
+been pinned in the application's eyes and unpinned in every query. A strict
+table rejects `'true'` in an integer column on its own, but the `CHECK` is still
+needed there to keep out 2 and -1.
+
+## Money
+
+A `REAL` cannot represent most decimal fractions exactly. 0.1 is stored as the
+double nearest to it, which is slightly more than 0.1, and the errors surface in
+arithmetic:
+
+```console
+sqlite> select 0.1 + 0.2, 0.1 + 0.2 = 0.3;
+╭─────────────────────┬─────────────────╮
+│      0.1 + 0.2      │ 0.1 + 0.2 = 0.3 │
+╞═════════════════════╪═════════════════╡
+│ 0.30000000000000004 │               0 │
+╰─────────────────────┴─────────────────╯
+```
+
+This is how every language's floating point works, not a flaw in SQLite, but
+SQLite makes it easy to walk into, because `REAL` is the only fractional type it
+has.
+
+The journal is gaining a place to record what a day cost. A first version with
+a `real` column:
+
+```console
+sqlite> create table expense (
+   ...>   id       integer primary key,
+   ...>   entry_id integer not null references entry(id) on delete cascade,
+   ...>   item     text not null,
+   ...>   amount   real not null
+   ...> );
+sqlite> insert into expense (entry_id, item, amount) values
+   ...>   (212, 'Check-up', 45.10),
+   ...>   (212, 'X-ray', 29.20),
+   ...>   (212, 'Insurance refund', -74.30);
+sqlite> select sum(amount), sum(amount) = 0 from expense where entry_id = 212;
+╭────────────────────────┬─────────────────╮
+│      sum(amount)       │ sum(amount) = 0 │
+╞════════════════════════╪═════════════════╡
+│ 3.5527136788005009e-15 │               0 │
+╰────────────────────────┴─────────────────╯
+```
+
+The refund covered the dentist in full, but the total is not zero, and any
+report that looks for fully refunded days will miss this one.
+
+### Integer cents
+
+The standard fix, and the one payment processors use, is to store amounts in
+the smallest unit of the currency as an `INTEGER`. Integer addition is exact, so
+sums and comparisons are too. Replace the table with a strict one, so that a
+fractional amount cannot slip in:
+
+```console
+sqlite> drop table expense;
+sqlite> create table expense (
+   ...>   id           integer primary key,
+   ...>   entry_id     integer not null references entry(id) on delete cascade,
+   ...>   item         text not null,
+   ...>   amount_cents integer not null
+   ...> ) strict;
+sqlite> insert into expense (entry_id, item, amount_cents) values
+   ...>   (212, 'Check-up', 4510),
+   ...>   (212, 'X-ray', 2920),
+   ...>   (212, 'Insurance refund', -7430),
+   ...>   (217, 'Basil and thyme', 820);
+sqlite> select entry_id, sum(amount_cents), sum(amount_cents) = 0 as refunded
+   ...> from expense
+   ...> group by entry_id;
+╭──────────┬───────────────────┬──────────╮
+│ entry_id │ sum(amount_cents) │ refunded │
+╞══════════╪═══════════════════╪══════════╡
+│      212 │                 0 │        1 │
+│      217 │               820 │        0 │
+╰──────────┴───────────────────┴──────────╯
+```
+
+The conversions at either end are where cents go missing. Converting a price
+typed as `8.20` by multiplying by 100 does not give 820, and `cast()` truncates
+rather than rounds, so round first:
+
+```console
+sqlite> select 8.20 * 100, cast(8.20 * 100 as integer), cast(round(8.20 * 100) as integer);
+╭────────────────────┬─────────────────────────────┬────────────────────────────────────╮
+│     8.20 * 100     │ cast(8.20 * 100 as integer) │ cast(round(8.20 * 100) as integer) │
+╞════════════════════╪═════════════════════════════╪════════════════════════════════════╡
+│ 819.99999999999989 │                         819 │                                820 │
+╰────────────────────┴─────────────────────────────┴────────────────────────────────────╯
+```
+
+Better still, parse the user's text into cents in the application, without a
+floating point number in between. On the way out, divide by `100.0`, not `100`.
+Dividing two integers in SQLite gives an integer, and the cents are discarded.
+
+### The decimal extension
+
+When amounts arrive as decimal text and have to stay exact through arithmetic,
+the decimal extension does arithmetic on decimal strings. The shell has it
+built in:
+
+```console
+sqlite> select decimal_add('0.1', '0.2'), decimal_sum(amount) from (
+   ...>   select 45.10 as amount union all select 29.20 union all select -74.30
+   ...> );
+╭───────────────────────────┬─────────────────────╮
+│ decimal_add('0.1', '0.2') │ decimal_sum(amount) │
+╞═══════════════════════════╪═════════════════════╡
+│ 0.3                       │ 0.0                 │
+╰───────────────────────────┴─────────────────────╯
+```
+
+It does its arithmetic in decimal, which is why `decimal_sum()` reached zero
+here where `sum()` did not, and its results are text. It is an
+extension, though. An application has to load it, and most drivers do not ship
+it, as <ChapterRef id="extensions" /> explains. For stored money, integer cents
+remain simpler: they need nothing loaded, and they sort, index and compare as
+numbers.
+
+## Enums
+
+SQLite has no `ENUM` type either, and the journal shows both ways to build one.
+A mood's `sentiment` is a `CHECK` against a fixed list:
+
+```console
+sqlite> insert into mood (name, sentiment) values ('ecstatic', 'very positive');
+Error near line 1: CHECK constraint failed: sentiment IN ('positive', 'neutral', 'negative')
+```
+
+The mood itself is the other way. `entry.mood_id` is a foreign key into a
+lookup table, and the set of allowed moods is whatever rows `mood` holds.
+
+The two suit different lists. A `CHECK` is the right choice for a short list
+that is part of the program's logic, where adding a value means changing code
+anyway. It needs no join, and the stored value is readable on its own.
+Its weakness is change: a `CHECK` cannot be altered in place, so adding a fourth
+sentiment means rebuilding the table, as <ChapterRef id="schema-evolution" />
+shows. A lookup table is right when the list is data, something a user or an
+administrator might extend, or when each value carries attributes of its own, as
+each mood carries its sentiment. Adding a value is an `INSERT`, and the price is
+a join whenever you want the name. <ChapterRef id="constraints-and-relationships" />
+covers the foreign key that holds it together.
+
+## BLOBs
+
+A `BLOB` is the storage class for bytes that are not text: hashes, keys, UUIDs,
+images, compressed data. The journal stores none, and it is worth seeing what
+that costs. Its session ids and password hash are random bytes written out as
+hex text, two characters per byte:
+
+```console
+sqlite> select sum(length(session_id)) as as_text,
+   ...>        sum(length(unhex(session_id))) as as_blob
+   ...> from session;
+╭─────────┬─────────╮
+│ as_text │ as_blob │
+╞═════════╪═════════╡
+│     768 │     384 │
+╰─────────┴─────────╯
+```
+
+`unhex()`, added in 3.41.0, turns hex text into the bytes, and
+`hex()` goes the other way. Stored as `BLOB`s, the session ids would take half
+the space. Hex text has a second trap: `'AB12'` and `'ab12'` spell
+the same bytes and are different strings, so two parts of an application that
+disagree about case will fail to find each other's sessions. Bytes have no case:
+
+```console
+sqlite> select 'AB12' = 'ab12' as text_equal, unhex('AB12') = unhex('ab12') as bytes_equal;
+╭────────────┬─────────────╮
+│ text_equal │ bytes_equal │
+╞════════════╪═════════════╡
+│          0 │           1 │
+╰────────────┴─────────────╯
+```
+
+Text is not wrong here. Hex is easy to log, copy into a URL and read in any
+tool, and at a dozen rows the size is irrelevant.
+
+Files are the other use. The `attachment` table above keeps photos inside the
+database, which keeps the file a complete backup of the journal and lets an
+attachment be written in the same transaction as its entry. SQLite's own
+measurements found that for blobs under about 100 KB, reading them from the
+database is faster than reading separate files. A blob bigger than about a page
+spills onto a chain of overflow pages, described in <ChapterRef id="inside-the-file" />,
+and large media is usually better kept as
+files, with the database storing the path.
+
+## Takeaways
+
+- **A value has a type, a column has a preference.** Five storage classes,
+  `INTEGER`, `REAL`, `TEXT`, `BLOB` and `NULL`, and in an ordinary table any
+  column can hold any of them.
+
+- **Affinity converts only when nothing is lost.** `'3'` becomes `3` in an
+  `INTEGER` column. `'banana'` stays `'banana'`.
+
+- **Declare `integer`, `real`, `text` or `blob`.** Other type names
+  go through substring rules.
+
+- **`cast()` never fails.** It turns `'12abc'` into 12 and `'abc'` into 0, so
+  it tidies data but cannot validate it.
+
+- **Use `STRICT` for new tables.** It rejects a value that cannot be converted
+  to the column's type, at the moment of the insert. It needs 3.37.0 in every
+  tool that opens the file, and it only accepts the storage class names plus
+  `INT` and `ANY`.
+
+- **Store dates as ISO 8601 text in one format per column, and check it.**
+  `CHECK (col IS datetime(col))` keeps out the `T` and `Z` of other formats,
+  which compare wrongly as text.
+
+- **Store instants in UTC and calendar dates as the user's date.** SQLite has
+  no time zone database. Convert in the application.
+
+- **Booleans are integers with a `CHECK (col in (0, 1))`.** The text `'true'`
+  is false in a condition.
+
+- **Use integer cents for money.** Round before converting with `cast()`, and divide
+  by `100.0`, never `100`, on the way out.
+
+- **An enum is a `CHECK` or a lookup table.** A `CHECK` for a fixed list that
+  lives in the code, a lookup table for a list that is data.
+
+- **Bytes belong in a `BLOB`.** Hex text doubles the size and can lead to case mismatches.

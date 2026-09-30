@@ -17,22 +17,71 @@ const ONCE_PER_CHAPTER = true;
 
 export const PRODUCTS = [
   // Client/server databases
-  "PostgreSQL", "Postgres", "MySQL", "MariaDB", "SQL Server", "Oracle",
+  "PostgreSQL",
+  "Postgres",
+  "MySQL",
+  "MariaDB",
+  "SQL Server",
+  "Oracle",
   // SQLite forks, services and hosts
-  "Turso Database", "Turso Cloud", "Turso", "libSQL", "Cloudflare D1", "Cloudflare",
-  "Litestream", "AWS Lambda", "Lambda", "Vercel", "Railway", "Docker", "Fly.io",
+  "Turso Database",
+  "Turso Cloud",
+  "Turso",
+  "libSQL",
+  "Cloudflare D1",
+  "Cloudflare",
+  "Litestream",
+  "AWS Lambda",
+  "Lambda",
+  "Vercel",
+  "Railway",
+  "Docker",
+  "Fly.io",
   // Drivers, ORMs and query builders
-  "better-sqlite3", "node:sqlite", "Bun", "Microsoft.Data.Sqlite", "SQLitePCLRaw",
-  "System.Data.SQLite", "Dapper", "EF Core", "Entity Framework", "Drizzle", "Prisma",
+  "better-sqlite3",
+  "node:sqlite",
+  "Bun",
+  "Microsoft.Data.Sqlite",
+  "SQLitePCLRaw",
+  "System.Data.SQLite",
+  "Dapper",
+  "EF Core",
+  "Entity Framework",
+  "Drizzle",
+  "Prisma",
   // Tools
-  "sqlite-utils", "DB Browser for SQLite", "DB Browser", "DBeaver", "sqlite3_rsync",
-  "Homebrew", "VS Code",
+  "sqlite-utils",
+  "DB Browser for SQLite",
+  "DB Browser",
+  "DBeaver",
+  "sqlite3_rsync",
+  "Homebrew",
+  "Tcl",
+  "VS Code",
   // Extensions and encryption
-  "SQLCipher", "sqlean", "sqlite-vec", "R*Tree", "geopoly", "ICU", "SEE",
+  "SQLCipher",
+  "sqlean",
+  "sqlite-vec",
+  "R*Tree",
+  "geopoly",
+  "ICU",
+  "SEE",
 ];
 
 const SKIP_TAGS = new Set([
-  "pre", "code", "a", "h1", "h2", "h3", "h4", "h5", "h6", "script", "style", "kbd", "samp",
+  "pre",
+  "code",
+  "a",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "script",
+  "style",
+  "kbd",
+  "samp",
 ]);
 
 function escapeRegExp(value) {
@@ -69,7 +118,10 @@ export default function rehypeProducts() {
         seen.add(name);
 
         if (match.index > cursor) {
-          parts.push({ type: "text", value: node.value.slice(cursor, match.index) });
+          parts.push({
+            type: "text",
+            value: node.value.slice(cursor, match.index),
+          });
         }
         parts.push({
           type: "element",
